@@ -129,6 +129,9 @@ instance Typecheck Latte.Abs.Stmt where
     Latte.Abs.BStmt _ block -> typecheck block
     Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
       Latte.Abs.NoInit _ ident -> do
+        --check if ident is present in declared variables
+        variables_used <- gets variables
+        when (Map.member ident variables_used) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p 
         modify $ \s -> s {variables = insert ident (True, keywordToType type_) (variables s)}
       Latte.Abs.Init _ ident expr -> do
         t <- typecheckExpr expr
