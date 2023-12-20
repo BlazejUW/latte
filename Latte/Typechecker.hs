@@ -2,6 +2,8 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use lambda-case" #-}
 
 module Latte.Typechecker where
 
@@ -88,8 +90,6 @@ instance TypecheckExpr Latte.Abs.Expr where
       case Map.lookup key (functions s) of
         Nothing -> throwError $ "Function " ++ functionName key ++ " not found " ++ errLocation p
         Just (Latte.Abs.FnDef _ t _ args _) -> do
-          -- -- main function should be int type
-          -- when (ident == Latte.Abs.Ident "main" && t /= Latte.Abs.Integer) $ throwError $ "Function main should return int " ++ errLocation p
           let expectedTypes = map (\(Latte.Abs.Arg _ type_ _) -> keywordToType type_) args
           actualTypes <- mapM typecheckExpr exprs
           unless (expectedTypes == actualTypes) $ throwError $ "Function " ++ name ident ++ " called with wrong arguments " ++ errLocation p
@@ -118,17 +118,6 @@ instance Typecheck Latte.Abs.TopDef where
     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
     typecheck block
     modify $ \s -> s {expectedReturnType = Nothing}
-  -- typecheck (Latte.Abs.GlobalDecl p type_ item) = case item of
-  --   Latte.Abs.NoInit _ ident -> do
-  --     modify $ \s -> s {globalVariables = insert ident (True, keywordToType type_) (globalVariables s)}
-  --   Latte.Abs.Init _ ident expr -> do
-  --     t <- typecheckExpr expr
-  --     checkTypes "declaration" p (keywordToType type_) t
-  --     modify $ \s -> s {globalVariables = insert ident (True, keywordToType type_) (globalVariables s)}
-  -- typecheck (Latte.Abs.GlobalConst p type_ ident expr) = do
-  --   t <- typecheckExpr expr
-  --   checkTypes "constant" p (keywordToType type_) t
-  --   modify $ \s -> s {globalVariables = insert ident (False, keywordToType type_) (globalVariables s)}
 
 instance Typecheck Latte.Abs.Block where
   typecheck (Latte.Abs.Block p stmts) = do
@@ -138,7 +127,7 @@ instance Typecheck Latte.Abs.Stmt where
   typecheck = \case
     Latte.Abs.Empty _ -> return ()
     Latte.Abs.BStmt _ block -> typecheck block
-    Latte.Abs.Decl p type_ item -> case item of
+    Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
       Latte.Abs.NoInit _ ident -> do
         modify $ \s -> s {variables = insert ident (True, keywordToType type_) (variables s)}
       Latte.Abs.Init _ ident expr -> do
@@ -172,21 +161,6 @@ instance Typecheck Latte.Abs.Stmt where
       case t of
         Boolean -> typecheck stmt
         other -> throwError $ "Type mismatch for while condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-    -- Latte.Abs.For p ident fromExpr toExpr block -> do
-    --   fromType <- typecheckExpr fromExpr
-    --   toType <- typecheckExpr toExpr
-    --   case (fromType, toType) of
-    --     (Integer, Integer) -> do
-    --       -- check if ident is already defined
-    --       s <- get
-    --       when (Map.member ident (variables s)) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p
-    --       -- add ident to variables
-    --       modify $ \s -> s {variables = insert ident (True, Integer) (variables s)}
-    --       typecheck block
-    --       -- remove ident from variables
-    --       modify $ \s -> s {variables = delete ident (variables s)}
-    --     (Integer, other) -> throwError $ "Type mismatch for for condition (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-    --     (other, _) -> throwError $ "Type mismatch for for condition (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.Incr p ident -> typecheckDecrIncr p ident
     Latte.Abs.Decr p ident -> typecheckDecrIncr p ident
     Latte.Abs.Ret p expr -> do
