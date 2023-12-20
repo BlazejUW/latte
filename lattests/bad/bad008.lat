@@ -1,7 +1,4 @@
   int main() { 
-    if (false){
-      int x;
-    }
-    int x;
-    return 0; 
+    if (false)
+       return 0; 
 }

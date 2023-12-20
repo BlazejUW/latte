@@ -23,5 +23,12 @@ for file in ./lattests/bad/*.lat; do
     ./Latte/RunCompile $file > /dev/null 2>&1 && echo -e $ERROR && exit 1 || echo -e $OK
 done
 
+echo "--- SHOULD NOT FAIL: ---"
+# Run all tests from good/ directory
+for file in ./lattests/good/*.lat; do
+    echo -n "Running test $file... "
+    ./Latte/RunCompile $file >/dev/null 2>1 && echo -e $ERROR && exit 1 || echo -e $OK
+done
+
 echo "--- END ---"
 echo "All tests run - check for failures above."

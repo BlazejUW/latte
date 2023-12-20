@@ -21,7 +21,8 @@ data TypecheckerState = TypecheckerState
   { functions :: Map (Latte.Abs.Ident, [Type]) Latte.Abs.TopDef,
     variables :: Map Latte.Abs.Ident (Bool, Type), -- Bool is True if variable is mutable
     globalVariables :: Map Latte.Abs.Ident (Bool, Type), -- Bool is True if variable is mutable
-    expectedReturnType :: Maybe Type
+    expectedReturnType :: Maybe Type,
+    returnReachable :: Bool
   }
   deriving (Eq, Ord, Show)
 
@@ -117,12 +118,19 @@ instance Typecheck Latte.Abs.TopDef where
     -- typecheck block, but first add arguments as variables, and check if return type matches
     modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, (True, keywordToType type_))) args}
     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
+    modify $ \s -> s {returnReachable = False}
     typecheck block
+    returnReached <- gets returnReachable
+    unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
     modify $ \s -> s {expectedReturnType = Nothing}
 
 instance Typecheck Latte.Abs.Block where
   typecheck (Latte.Abs.Block p stmts) = do
+    originalState <- get
     forM_ stmts typecheck
+    returnReached <- gets returnReachable
+    put originalState
+    modify $ \s -> s {returnReachable = returnReached} 
 
 instance Typecheck Latte.Abs.Stmt where
   typecheck = \case
@@ -151,15 +159,28 @@ instance Typecheck Latte.Abs.Stmt where
     Latte.Abs.Cond p expr stmt -> do
       t <- typecheckExpr expr
       case t of
-        Boolean -> typecheck stmt
+        Boolean -> do
+          originalState <- get
+          typecheck stmt
+          put originalState
+          modify $ \s -> s {returnReachable = returnReachable s}
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.CondElse p expr stmt1 stmt2 -> do
-      t <- typecheckExpr expr
-      case t of
-        Boolean -> do
-          typecheck stmt1
-          typecheck stmt2
-        other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
+          t <- typecheckExpr expr
+          case t of
+            Boolean -> do
+              originalState <- get
+              originalReachable <- gets returnReachable
+              modify $ \s -> s {returnReachable = False}
+              typecheck stmt1
+              ifReturnReached1 <- gets returnReachable
+              put originalState
+              modify $ \s -> s {returnReachable = False}
+              typecheck stmt2
+              ifReturnReached2 <- gets returnReachable
+              put originalState
+              modify $ \s -> s {returnReachable = (ifReturnReached1 && ifReturnReached2) || originalReachable}
+            other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.While p expr stmt -> do
       t <- typecheckExpr expr
       case t of
@@ -174,12 +195,15 @@ instance Typecheck Latte.Abs.Stmt where
         Nothing -> throwError $ "Unexpected return statement " ++ errLocation p
         Just expectedReturnType -> do
           checkTypes "return" p expectedReturnType t
+          modify $ \s -> s {returnReachable = True}
     Latte.Abs.VRet p -> do
       expectedReturnType <- gets expectedReturnType
       case expectedReturnType of
         Nothing -> throwError $ "Unexpected return statement " ++ errLocation p
         Just expectedReturnType -> do
           checkTypes "return" p expectedReturnType Latte.Helpers.Void
+          modify $ \s -> s {returnReachable = True}
+
     Latte.Abs.SExp _ expr -> do
       typecheckExpr expr
       return ()
@@ -208,4 +232,4 @@ typecheckDecrIncr p ident = do
 
 
 runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
-runTypechecker program = execStateT (typecheck program) $ TypecheckerState Map.empty Map.empty Map.empty Nothing
+runTypechecker program = execStateT (typecheck program) $ TypecheckerState Map.empty Map.empty Map.empty Nothing False
