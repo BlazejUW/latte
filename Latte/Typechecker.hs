@@ -15,6 +15,7 @@ import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword)
+import Data.Void (Void)
 
 data TypecheckerState = TypecheckerState
   { functions :: Map (Latte.Abs.Ident, [Type]) Latte.Abs.TopDef,
@@ -173,6 +174,12 @@ instance Typecheck Latte.Abs.Stmt where
         Nothing -> throwError $ "Unexpected return statement " ++ errLocation p
         Just expectedReturnType -> do
           checkTypes "return" p expectedReturnType t
+    Latte.Abs.VRet p -> do
+      expectedReturnType <- gets expectedReturnType
+      case expectedReturnType of
+        Nothing -> throwError $ "Unexpected return statement " ++ errLocation p
+        Just expectedReturnType -> do
+          checkTypes "return" p expectedReturnType Latte.Helpers.Void
     Latte.Abs.SExp _ expr -> do
       typecheckExpr expr
       return ()
