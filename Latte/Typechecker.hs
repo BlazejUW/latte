@@ -185,9 +185,18 @@ instance Typecheck Latte.Abs.Stmt where
       case t of
         Boolean -> do
           originalState <- get
-          typecheck stmt
-          put originalState
+          -- Użyj dopasowania wzorca tutaj
+          case expr of
+            Latte.Abs.ELitTrue _ -> do
+              typecheck stmt
+              currentState <- get
+              put originalState
+              modify $ \s -> s {returnReachable = returnReachable currentState}
+            _ -> do
+              typecheck stmt
+              put originalState
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
+
     Latte.Abs.CondElse p expr stmt1 stmt2 -> do
           t <- typecheckExpr expr
           case t of
