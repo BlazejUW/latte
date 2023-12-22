@@ -20,8 +20,8 @@ import Data.Void (Void)
 data TypecheckerState = TypecheckerState
   { functions :: Map (Latte.Abs.Ident, [Type]) Latte.Abs.TopDef,
     functionsSignatures :: Map Latte.Abs.Ident (Type, [Type]), 
-    variables :: Map Latte.Abs.Ident (Bool, Type), -- Bool is True if variable is mutable
-    globalVariables :: Map Latte.Abs.Ident (Bool, Type), -- Bool is True if variable is mutable
+    variables :: Map Latte.Abs.Ident Type,
+    globalVariables :: Map Latte.Abs.Ident Type, -- Bool is True if variable is mutable
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool
   }
@@ -83,8 +83,8 @@ instance TypecheckExpr Latte.Abs.Expr where
       let localVar = Map.lookup ident (variables s)
       let globalVar = Map.lookup ident (globalVariables s)
       case (localVar, globalVar) of
-        (Just (_, type_), _) -> return type_
-        (_, Just (_, type_)) -> return type_
+        (Just type_, _) -> return type_
+        (_, Just type_) -> return type_
         _ -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       s <- get
@@ -116,26 +116,13 @@ instance Typecheck Latte.Abs.Program where
     let key = Latte.Abs.Ident "main"
     when (Map.notMember key functions) $ throwError $ "Function main not found " ++ errLocation p
 
-
-
--- instance Typecheck Latte.Abs.TopDef where
---   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
---     -- typecheck block, but first add arguments as variables, and check if return type matches
---     modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, (True, keywordToType type_))) args}
---     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
---     modify $ \s -> s {returnReachable = False}
---     typecheck block
---     returnReached <- gets returnReachable
---     unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
---     modify $ \s -> s {expectedReturnType = Nothing}
-
 instance Typecheck Latte.Abs.TopDef where
   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     let returnType = keywordToType t
     modify $ \s -> s {functionsSignatures = Map.insert ident (returnType, argTypes) (functionsSignatures s)}
     -- typecheck block, but first add arguments as variables, and check if return type matches
-    modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, (True, keywordToType type_))) args}
+    modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, keywordToType type_)) args}
     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
     modify $ \s -> s {returnReachable = False}
     typecheck block
@@ -165,11 +152,11 @@ instance Typecheck Latte.Abs.Stmt where
         --check if ident is present in declared variables
         variables_used <- gets variables
         when (Map.member ident variables_used) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p
-        modify $ \s -> s {variables = insert ident (True, keywordToType type_) (variables s)}
+        modify $ \s -> s {variables = insert ident (keywordToType type_) (variables s)}
       Latte.Abs.Init _ ident expr -> do
         t <- typecheckExpr expr
         checkTypes "declaration" p (keywordToType type_) t
-        modify $ \s -> s {variables = insert ident (True, keywordToType type_) (variables s)}
+        modify $ \s -> s {variables = insert ident (keywordToType type_) (variables s)}
     Latte.Abs.Ass p ident expr -> do
       s <- get
       t <- typecheckExpr expr
@@ -178,14 +165,12 @@ instance Typecheck Latte.Abs.Stmt where
       let varInfo = if isJust localVar then localVar else globalVar
       case varInfo of
         Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
-        Just (False, _) -> throwError $ "Cannot assign to a variable " ++ name ident ++ " as it is a constant " ++ errLocation p
-        Just (_, type_) -> checkTypes "assignment" p type_ t
+        Just type_ -> checkTypes "assignment" p type_ t
     Latte.Abs.Cond p expr stmt -> do
       t <- typecheckExpr expr
       case t of
         Boolean -> do
           originalState <- get
-          -- Użyj dopasowania wzorca tutaj
           case expr of
             Latte.Abs.ELitTrue _ -> do
               typecheck stmt
@@ -270,20 +255,15 @@ typecheckDecrIncr p ident = do
   let globalVar = Map.lookup ident (globalVariables s)
   case (localVar, globalVar) of
     (Nothing, Nothing) -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
-    (Just (False, _), _) -> throwError $ "Variable " ++ name ident ++ " is immutable " ++ errLocation p
-    (_, Just (False, _)) -> throwError $ "Variable " ++ name ident ++ " is immutable " ++ errLocation p
-    (Just (_, type_), _) -> do
+    (Just type_, _) -> do
       case type_ of
         Integer -> return ()
         other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-    (_, Just (_, type_)) -> do
+    (_, Just type_) -> do
       case type_ of
         Integer -> return ()
         other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
 
-
--- runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
--- runTypechecker program = execStateT (typecheck program) $ TypecheckerState Map.empty Map.empty Map.empty Map.empty Nothing False
 
 runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
 runTypechecker program = execStateT (typecheck program) initialState
