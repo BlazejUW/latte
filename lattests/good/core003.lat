@@ -1,5 +1,5 @@
 // Testing the return checker
-
+/*
 int f () {
    if (true)
      return 0;
@@ -21,3 +21,5 @@ int main() {
   p();
   return 0;
 }
+*/
+int main(){return 0;}

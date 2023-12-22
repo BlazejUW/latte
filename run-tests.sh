@@ -27,7 +27,7 @@ echo "--- SHOULD NOT FAIL: ---"
 # Run all tests from good/ directory
 for file in ./lattests/good/*.lat; do
     echo -n "Running test $file... "
-    ./Latte/RunCompile $file >/dev/null 2>1 && echo -e $ERROR && exit 1 || echo -e $OK
+    ./Latte/RunCompile $file >/dev/null 2>1 && echo -e $OK || exit 1
 done
 
 echo "--- END ---"

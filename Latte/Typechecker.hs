@@ -19,6 +19,7 @@ import Data.Void (Void)
 
 data TypecheckerState = TypecheckerState
   { functions :: Map (Latte.Abs.Ident, [Type]) Latte.Abs.TopDef,
+    functionsSignatures :: Map Latte.Abs.Ident (Type, [Type]), 
     variables :: Map Latte.Abs.Ident (Bool, Type), -- Bool is True if variable is mutable
     globalVariables :: Map Latte.Abs.Ident (Bool, Type), -- Bool is True if variable is mutable
     expectedReturnType :: Maybe Type,
@@ -27,9 +28,9 @@ data TypecheckerState = TypecheckerState
   deriving (Eq, Ord, Show)
 
 type LTS a = StateT TypecheckerState (Either String) a
-
+checkTypes :: (MonadError [Char] f, Show a1, Show a2) => [Char] -> Maybe (a1, a2) -> Type -> Type -> f ()
 checkTypes ident p l r = unless (l == r) $ throwError $ "Type mismatch for " ++
-                 ident ++ " - left (" ++ typeToKeyword l ++ ") and right (" ++ 
+                 ident ++ " - left (" ++ typeToKeyword l ++ ") and right (" ++
                  typeToKeyword r ++ ") do not match at " ++ errLocation p
 
 
@@ -89,40 +90,63 @@ instance TypecheckExpr Latte.Abs.Expr where
       s <- get
       types <- mapM typecheckExpr exprs
       let key = (ident, types)
-      case Map.lookup key (functions s) of
+      case Map.lookup ident (functionsSignatures s) of
         Nothing -> throwError $ "Function " ++ functionName key ++ " not found " ++ errLocation p
-        Just (Latte.Abs.FnDef _ t _ args _) -> do
-          let expectedTypes = map (\(Latte.Abs.Arg _ type_ _) -> keywordToType type_) args
-          actualTypes <- mapM typecheckExpr exprs
-          unless (expectedTypes == actualTypes) $ throwError $ "Function " ++ name ident ++ " called with wrong arguments " ++ errLocation p
-          return $ keywordToType t
+        Just (t, expectedTypes) -> do
+              actualTypes <- mapM typecheckExpr exprs
+              unless (expectedTypes == actualTypes) $ throwError $ "Function " ++ name ident ++ " called with wrong arguments " ++ errLocation p
+              return t
 
 
 class Typecheck a where
   typecheck :: a -> LTS ()
 
+collectFunctionSignatures :: Latte.Abs.TopDef -> LTS ()
+collectFunctionSignatures (Latte.Abs.FnDef _ t ident args _) = do
+  let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+  let returnType = keywordToType t
+  modify $ \s -> s {functionsSignatures = Map.insert ident (returnType, argTypes) (functionsSignatures s)}
+
+
 instance Typecheck Latte.Abs.Program where
   typecheck (Latte.Abs.Program p topdefs) = do
-    forM_ topdefs typecheck
-    functions <- gets functions
-    let key = (Latte.Abs.Ident "main", [])
+    mapM_ collectFunctionSignatures topdefs
+    mapM_ typecheck topdefs
+    functions <- gets functionsSignatures
+    let key = Latte.Abs.Ident "main"
     when (Map.notMember key functions) $ throwError $ "Function main not found " ++ errLocation p
 
 
+
+-- instance Typecheck Latte.Abs.TopDef where
+--   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
+--     -- typecheck block, but first add arguments as variables, and check if return type matches
+--     modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, (True, keywordToType type_))) args}
+--     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
+--     modify $ \s -> s {returnReachable = False}
+--     typecheck block
+--     returnReached <- gets returnReachable
+--     unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
+--     modify $ \s -> s {expectedReturnType = Nothing}
+
 instance Typecheck Latte.Abs.TopDef where
   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
-    functions <- gets functions
-    let key = (ident, map (\(Latte.Abs.Arg _ type_ _) -> keywordToType type_) args)
-    when (Map.member key functions) $ throwError $ "Function " ++ functionName key ++ " already defined " ++ errLocation p
-    modify $ \s -> s {functions = insert key fndef functions}
+    let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+    let returnType = keywordToType t
+    modify $ \s -> s {functionsSignatures = Map.insert ident (returnType, argTypes) (functionsSignatures s)}
     -- typecheck block, but first add arguments as variables, and check if return type matches
     modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, (True, keywordToType type_))) args}
     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
     modify $ \s -> s {returnReachable = False}
     typecheck block
-    returnReached <- gets returnReachable
-    unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
+    expectedRetType <- gets expectedReturnType
+    case expectedRetType of
+      Just Void -> return ()
+      _ -> do
+        returnReached <- gets returnReachable
+        unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
     modify $ \s -> s {expectedReturnType = Nothing}
+
 
 instance Typecheck Latte.Abs.Block where
   typecheck (Latte.Abs.Block p stmts) = do
@@ -130,7 +154,7 @@ instance Typecheck Latte.Abs.Block where
     forM_ stmts typecheck
     returnReached <- gets returnReachable
     put originalState
-    modify $ \s -> s {returnReachable = returnReached} 
+    modify $ \s -> s {returnReachable = returnReached}
 
 instance Typecheck Latte.Abs.Stmt where
   typecheck = \case
@@ -140,7 +164,7 @@ instance Typecheck Latte.Abs.Stmt where
       Latte.Abs.NoInit _ ident -> do
         --check if ident is present in declared variables
         variables_used <- gets variables
-        when (Map.member ident variables_used) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p 
+        when (Map.member ident variables_used) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p
         modify $ \s -> s {variables = insert ident (True, keywordToType type_) (variables s)}
       Latte.Abs.Init _ ident expr -> do
         t <- typecheckExpr expr
@@ -163,7 +187,6 @@ instance Typecheck Latte.Abs.Stmt where
           originalState <- get
           typecheck stmt
           put originalState
-          modify $ \s -> s {returnReachable = returnReachable s}
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.CondElse p expr stmt1 stmt2 -> do
           t <- typecheckExpr expr
@@ -181,10 +204,13 @@ instance Typecheck Latte.Abs.Stmt where
               put originalState
               modify $ \s -> s {returnReachable = (ifReturnReached1 && ifReturnReached2) || originalReachable}
             other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-    Latte.Abs.While p expr stmt -> do
+    Latte.Abs.While p expr stmt -> do --tutaj tez dodac ten return
       t <- typecheckExpr expr
+      originalState <- get
       case t of
-        Boolean -> typecheck stmt
+        Boolean -> do
+          typecheck stmt
+          put originalState
         other -> throwError $ "Type mismatch for while condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.Incr p ident -> typecheckDecrIncr p ident
     Latte.Abs.Decr p ident -> typecheckDecrIncr p ident
@@ -207,10 +233,6 @@ instance Typecheck Latte.Abs.Stmt where
     Latte.Abs.SExp _ expr -> do
       typecheckExpr expr
       return ()
-    -- Latte.Abs.Const p type_ ident expr -> do
-    --   t <- typecheckExpr expr
-    --   checkTypes "constant" p (keywordToType type_) t
-    --   modify $ \s -> s {variables = insert ident (False, keywordToType type_) (variables s)}
 
 -- common typecheck for Decr. and Incr.
 typecheckDecrIncr p ident = do
@@ -231,5 +253,25 @@ typecheckDecrIncr p ident = do
         other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
 
 
+-- runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
+-- runTypechecker program = execStateT (typecheck program) $ TypecheckerState Map.empty Map.empty Map.empty Map.empty Nothing False
+
 runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
-runTypechecker program = execStateT (typecheck program) $ TypecheckerState Map.empty Map.empty Map.empty Nothing False
+runTypechecker program = execStateT (typecheck program) initialState
+  where
+    initialState = TypecheckerState
+      { functions = Map.empty
+      , functionsSignatures = predefFunctions
+      , variables = Map.empty
+      , globalVariables = Map.empty
+      , expectedReturnType = Nothing
+      , returnReachable = False
+      }
+
+    predefFunctions = Map.fromList
+      [ (Latte.Abs.Ident "printInt", (Latte.Helpers.Void, [Latte.Helpers.Integer]))
+      , (Latte.Abs.Ident "printString", (Latte.Helpers.Void, [Latte.Helpers.String]))
+      , (Latte.Abs.Ident "error", (Latte.Helpers.Void, []))
+      , (Latte.Abs.Ident "readInt", (Latte.Helpers.Integer, []))
+      , (Latte.Abs.Ident "readString", (Latte.Helpers.String, []))
+      ]
