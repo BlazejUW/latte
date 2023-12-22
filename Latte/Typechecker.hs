@@ -196,14 +196,28 @@ instance Typecheck Latte.Abs.Stmt where
               typecheck stmt
               put originalState
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-
     Latte.Abs.CondElse p expr stmt1 stmt2 -> do
-          t <- typecheckExpr expr
-          case t of
-            Boolean -> do
-              originalState <- get
-              originalReachable <- gets returnReachable
-              modify $ \s -> s {returnReachable = False}
+      t <- typecheckExpr expr
+      case t of
+        Boolean -> do
+          originalState <- get
+          originalReachable <- gets returnReachable
+          modify $ \s -> s {returnReachable = False}
+          case expr of
+            Latte.Abs.ELitTrue _ -> do
+              typecheck stmt1
+              ifReturnReached <- gets returnReachable
+              typecheck stmt2
+              put originalState
+              modify $ \s -> s {returnReachable = ifReturnReached || originalReachable}
+            Latte.Abs.ELitFalse _ -> do
+              typecheck stmt1
+              put originalState
+              typecheck stmt2
+              elseReturnReached <- gets returnReachable
+              put originalState
+              modify $ \s -> s {returnReachable = elseReturnReached || originalReachable}
+            _ -> do
               typecheck stmt1
               ifReturnReached1 <- gets returnReachable
               put originalState
@@ -212,14 +226,20 @@ instance Typecheck Latte.Abs.Stmt where
               ifReturnReached2 <- gets returnReachable
               put originalState
               modify $ \s -> s {returnReachable = (ifReturnReached1 && ifReturnReached2) || originalReachable}
-            other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-    Latte.Abs.While p expr stmt -> do --tutaj tez dodac ten return
+        other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
+    Latte.Abs.While p expr stmt -> do
       t <- typecheckExpr expr
       originalState <- get
       case t of
         Boolean -> do
           typecheck stmt
-          put originalState
+          case expr of
+            Latte.Abs.ELitTrue _ -> do
+              currentState <- get
+              put originalState
+              modify $ \s -> s {returnReachable = returnReachable currentState}
+            _ -> do
+              put originalState
         other -> throwError $ "Type mismatch for while condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.Incr p ident -> typecheckDecrIncr p ident
     Latte.Abs.Decr p ident -> typecheckDecrIncr p ident
