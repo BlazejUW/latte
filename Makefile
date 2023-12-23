@@ -30,7 +30,7 @@ Latte/Abs.hs Latte/Lex.x Latte/Par.y Latte/Print.hs Latte/Test.hs : Latte.cf
 Latte/Test : Latte/Abs.hs Latte/Lex.hs Latte/Par.hs Latte/Print.hs Latte/Test.hs
 	${GHC} ${GHC_OPTS} $@
 
-Latte/RunCompile : Latte/Abs.hs Latte/Lex.hs Latte/Par.hs Latte/Print.hs Latte/RunCompile.hs Latte/Compile.hs Latte/Typechecker.hs
+Latte/RunCompile : Latte/Abs.hs Latte/Lex.hs Latte/Par.hs Latte/Print.hs Latte/RunCompile.hs Latte/Compiler.hs Latte/Typechecker.hs
 	${GHC} ${GHC_OPTS} $@
 
 compile : Latte/RunCompile

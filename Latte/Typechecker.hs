@@ -18,8 +18,8 @@ import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functi
 import Data.Void (Void)
 
 data TypecheckerState = TypecheckerState
-  { functions :: Map (Latte.Abs.Ident, [Type]) Latte.Abs.TopDef,
-    functionsSignatures :: Map Latte.Abs.Ident (Type, [Type]), 
+  { 
+    functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type, 
     variables :: Map Latte.Abs.Ident Type,
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool
@@ -87,13 +87,10 @@ instance TypecheckExpr Latte.Abs.Expr where
       s <- get
       types <- mapM typecheckExpr exprs
       let key = (ident, types)
-      case Map.lookup ident (functionsSignatures s) of
+      case Map.lookup key (functionsSignatures s) of
         Nothing -> throwError $ "Function " ++ functionName key ++ " not found " ++ errLocation p
-        Just (t, expectedTypes) -> do
-              actualTypes <- mapM typecheckExpr exprs
-              unless (expectedTypes == actualTypes) $ throwError $ "Function " ++ name ident ++ " called with wrong arguments " ++ errLocation p
-              return t
-
+        Just t-> do
+          return t
 
 class Typecheck a where
   typecheck :: a -> LTS ()
@@ -102,7 +99,7 @@ collectFunctionSignatures :: Latte.Abs.TopDef -> LTS ()
 collectFunctionSignatures (Latte.Abs.FnDef _ t ident args _) = do
   let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
   let returnType = keywordToType t
-  modify $ \s -> s {functionsSignatures = Map.insert ident (returnType, argTypes) (functionsSignatures s)}
+  modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
 
 
 instance Typecheck Latte.Abs.Program where
@@ -110,14 +107,14 @@ instance Typecheck Latte.Abs.Program where
     mapM_ collectFunctionSignatures topdefs
     mapM_ typecheck topdefs
     functions <- gets functionsSignatures
-    let key = Latte.Abs.Ident "main"
+    let key = (Latte.Abs.Ident "main", [])
     when (Map.notMember key functions) $ throwError $ "Function main not found " ++ errLocation p
 
 instance Typecheck Latte.Abs.TopDef where
   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     let returnType = keywordToType t
-    modify $ \s -> s {functionsSignatures = Map.insert ident (returnType, argTypes) (functionsSignatures s)}
+    modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
     -- typecheck block, but first add arguments as variables, and check if return type matches
     modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, keywordToType type_)) args}
     modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
@@ -259,17 +256,17 @@ runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
 runTypechecker program = execStateT (typecheck program) initialState
   where
     initialState = TypecheckerState
-      { functions = Map.empty
-      , functionsSignatures = predefFunctions
+      { functionsSignatures = predefFunctions
       , variables = Map.empty
       , expectedReturnType = Nothing
       , returnReachable = False
       }
 
     predefFunctions = Map.fromList
-      [ (Latte.Abs.Ident "printInt", (Latte.Helpers.Void, [Latte.Helpers.Integer]))
-      , (Latte.Abs.Ident "printString", (Latte.Helpers.Void, [Latte.Helpers.String]))
-      , (Latte.Abs.Ident "error", (Latte.Helpers.Void, []))
-      , (Latte.Abs.Ident "readInt", (Latte.Helpers.Integer, []))
-      , (Latte.Abs.Ident "readString", (Latte.Helpers.String, []))
+      [ ((Latte.Abs.Ident "printInt", [Latte.Helpers.Integer]), Latte.Helpers.Void)
+      , ((Latte.Abs.Ident "printString", [Latte.Helpers.String]), Latte.Helpers.Void)
+      , ((Latte.Abs.Ident "error", []), Latte.Helpers.Void)
+      , ((Latte.Abs.Ident "readInt", []), Latte.Helpers.Integer)
+      , ((Latte.Abs.Ident "readString", []), Latte.Helpers.String)
       ]
+
