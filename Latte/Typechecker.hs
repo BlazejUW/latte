@@ -21,7 +21,6 @@ data TypecheckerState = TypecheckerState
   { functions :: Map (Latte.Abs.Ident, [Type]) Latte.Abs.TopDef,
     functionsSignatures :: Map Latte.Abs.Ident (Type, [Type]), 
     variables :: Map Latte.Abs.Ident Type,
-    globalVariables :: Map Latte.Abs.Ident Type, -- Bool is True if variable is mutable
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool
   }
@@ -81,10 +80,8 @@ instance TypecheckExpr Latte.Abs.Expr where
     Latte.Abs.EVar p ident -> do
       s <- get
       let localVar = Map.lookup ident (variables s)
-      let globalVar = Map.lookup ident (globalVariables s)
-      case (localVar, globalVar) of
-        (Just type_, _) -> return type_
-        (_, Just type_) -> return type_
+      case localVar of
+        Just type_ -> return type_
         _ -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       s <- get
@@ -161,8 +158,7 @@ instance Typecheck Latte.Abs.Stmt where
       s <- get
       t <- typecheckExpr expr
       let localVar = Map.lookup ident (variables s)
-      let globalVar = Map.lookup ident (globalVariables s)
-      let varInfo = if isJust localVar then localVar else globalVar
+      let varInfo = localVar
       case varInfo of
         Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
         Just type_ -> checkTypes "assignment" p type_ t
@@ -252,18 +248,12 @@ instance Typecheck Latte.Abs.Stmt where
 typecheckDecrIncr p ident = do
   s <- get
   let localVar = Map.lookup ident (variables s)
-  let globalVar = Map.lookup ident (globalVariables s)
-  case (localVar, globalVar) of
-    (Nothing, Nothing) -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
-    (Just type_, _) -> do
+  case localVar of
+    Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
+    Just type_ -> do
       case type_ of
         Integer -> return ()
         other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-    (_, Just type_) -> do
-      case type_ of
-        Integer -> return ()
-        other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
-
 
 runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
 runTypechecker program = execStateT (typecheck program) initialState
@@ -272,7 +262,6 @@ runTypechecker program = execStateT (typecheck program) initialState
       { functions = Map.empty
       , functionsSignatures = predefFunctions
       , variables = Map.empty
-      , globalVariables = Map.empty
       , expectedReturnType = Nothing
       , returnReachable = False
       }
