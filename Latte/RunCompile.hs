@@ -21,6 +21,7 @@ import Latte.Par   ( pProgram, myLexer )
 import Latte.Print ( Print, printTree )
 --TODO compiler
 import Latte.Typechecker (runTypechecker, Typecheck, TypecheckerState)
+import Latte.Compiler (Compile, runCompiler, compilerOutput, CompilerState)
 
 type Err        = Either String
 type ParseFun a = [Token] -> Err a
@@ -29,12 +30,10 @@ type Verbosity  = Int
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
-runFile :: (Print a, Show a, Typecheck a) => Verbosity -> ParseFun a -> FilePath -> IO ()
--- runFile :: (Print a, Show a) => Verbosity -> ParseFun a -> FilePath -> IO ()
+runFile :: (Print a, Show a, Compile a, Typecheck a) => Verbosity -> ParseFun a -> FilePath -> IO ()
 runFile v p f = putStrV v f >> readFile f >>= run v p
 
-run :: (Print a, Show a, Typecheck a) => Verbosity -> ParseFun a -> String -> IO ()
--- run :: (Print a, Show a) => Verbosity -> ParseFun a -> String -> IO ()
+run :: (Print a, Show a, Compile a, Typecheck a) => Verbosity -> ParseFun a -> String -> IO ()
 run v p s =
   case p ts of
     Left err -> do
@@ -55,6 +54,21 @@ run v p s =
         Right s -> do
           putStrV v "\n## Typechecking Successful!"
         --   putStrV v $ "\n[Final State]\n\n" ++ show s
+          let result = runCompiler tree
+            -- putStrLn (show result)
+          case result of
+            Left err -> do
+              putStrLn "\n## Evaluation Failed...\n"
+              putStrLn err
+              exitFailure
+            Right s -> do
+              putStrV v "\n## Evaluation Successful!"
+              putStrV v $ "\n[Final State]\n\n" ++ show s
+
+              putStrV v "\n[Output]"
+              let lines = unlines $ reverse (compilerOutput s)
+              putStr lines
+              -- exitWith $ exitCode s
   where
   ts = myLexer s
   showPosToken ((l,c),t) = concat [ show l, ":", show c, "\t", show t ]

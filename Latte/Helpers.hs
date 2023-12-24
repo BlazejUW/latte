@@ -24,6 +24,14 @@ keywordToType = \case
   Latte.Abs.Bool _ -> Boolean
   Latte.Abs.Void _ -> Void
 
+typeToLlvmKeyword :: Type -> String 
+typeToLlvmKeyword = \case
+  Integer -> "i32"
+  String -> "i8*" 
+  Boolean -> "i1"
+  Void -> "void"
+
+
 name :: Latte.Abs.Ident -> String
 name (Latte.Abs.Ident s) = s
 

@@ -1,37 +1,40 @@
--- {-# LANGUAGE LambdaCase #-}
--- {-# LANGUAGE TypeSynonymInstances #-}
--- {-# LANGUAGE FlexibleInstances #-}
--- {-# LANGUAGE FlexibleContexts #-}
--- {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
--- {-# HLINT ignore "Use lambda-case" #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use lambda-case" #-}
 
--- module Latte.Typechecker where
+module Latte.Compiler where
 
--- import Control.Monad.Except (MonadError (throwError))
--- import Control.Monad (forM, forM_, unless, when)
--- import Control.Monad.State (StateT, execStateT, get, gets, modify, put)
--- import Data.Map (Map, adjust, delete, insert)
--- import qualified Data.Map as Map
--- import Data.Maybe (isJust)
--- import qualified Latte.Abs
--- import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword)
--- import Data.Void (Void)
+import Control.Monad.Except (MonadError (throwError))
+import Control.Monad (forM, forM_, unless, when)
+import Control.Monad.State (StateT, execStateT, get, gets, modify, put)
+import Data.Map (Map, adjust, delete, insert)
+import qualified Data.Map as Map
+import Data.Maybe (isJust)
+import Data.List (intercalate)
+import qualified Latte.Abs
+import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword)
+import Data.Void (Void)
+import qualified Distribution.Simple as Latte
 
--- data CompilerState = TypecheckerState
---   { 
---     compilerOutput :: CompilerOutput
---   }
---   deriving (Eq, Ord, Show)
+data CompilerState = CompilerState
+  { 
+    compilerOutput :: CompilerOutput,
+    expectedReturnType :: Maybe Type
+  }
+  deriving (Eq, Ord, Show)
 
--- type LCS a = StateT CompilerState (Either String) a
+type LCS a = StateT CompilerState (Either CompilerError) a
+type CompilerError = String
+type CompilerOutput = [String]
 
--- type CompilerOutput = String
 
+class CompileExpr a where
+  compilerExpr :: a -> CompilerOutput
 
--- class CompilerExpr a where
---   compilerExpr :: a -> CompilerOutput
-
--- instance CompilerExpr Latte.Abs.Expr where
+-- instance CompileExpr Latte.Abs.Expr where
 --   compilerExpr = \case
 --     Latte.Abs.ELitInt _ ident -> "i32 %" ++ ident
 --     Latte.Abs.ELitTrue _ -> ""
@@ -49,44 +52,65 @@
 --     Latte.Abs.EApp p ident exprs -> ""
 
 
--- class Compile a where
---   compile :: a -> LCS ()
+class Compile a where
+  compile :: a -> LCS ()
 
 
--- instance Compile Latte.Abs.Program where
---     -- compilation to LLVM IR
---   compile (Latte.Abs.Program p topdefs) = 
+instance Compile Latte.Abs.Program where
+    -- compilation to LLVM IR
+    compile (Latte.Abs.Program _ topdefs) = do
+        forM_ topdefs compile
 
 
--- instance Compile Latte.Abs.TopDef where
---   compile fndef@(Latte.Abs.FnDef p t ident args block) = ""
+printArg :: Latte.Abs.Arg -> String
+printArg (Latte.Abs.Arg _ argType ident) =
+    typeToLlvmKeyword (keywordToType argType) ++ " %" ++ name ident
 
 
--- instance Compile Latte.Abs.Block where
---   compile (Latte.Abs.Block p stmts) = ""
-
--- instance Compile Latte.Abs.Stmt where
---   compile = \case
---     Latte.Abs.Empty _ -> ""
---     Latte.Abs.BStmt _ block -> ""
---     Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
---       Latte.Abs.NoInit _ ident -> ""
---       Latte.Abs.Init _ ident expr ->""
---     Latte.Abs.Ass p ident expr -> ""
---     Latte.Abs.Cond p expr stmt -> ""
---     Latte.Abs.CondElse p expr stmt1 stmt2 ->    ""
---     Latte.Abs.While p expr stmt ->     ""
---     Latte.Abs.Incr p ident -> ""
---     Latte.Abs.Decr p ident -> ""
---     Latte.Abs.Ret p expr -> ""
---     Latte.Abs.VRet p -> ""
---     Latte.Abs.SExp _ expr -> ""
+instance Compile Latte.Abs.TopDef where
+  compile fndef@(Latte.Abs.FnDef p t ident args block) = do
+    let retType = keywordToType t
+    let argsStr = intercalate ", " (map printArg args)
+    let funName = name ident
+    let funSignature =  typeToLlvmKeyword retType ++ " @" ++ funName ++ "(" ++ argsStr ++ ")"
+    let funHeader = "define " ++ funSignature
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ [funHeader] }
+    compile block
 
 
--- runCompiler :: (Compile a) => a -> Either String CompilerState
--- runCompiler program = execStateT (compile program) initialState
---   where
---     initialState = TypecheckerState
---       { 
---         -- Remove the unnecessary line "CompilerOutput "".
---       }
+
+instance Compile Latte.Abs.Block where
+    compile (Latte.Abs.Block _ stmts) = do
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["{"] }
+        forM_ stmts compile 
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"] }
+
+
+instance Compile Latte.Abs.Stmt where
+  compile = \case
+    Latte.Abs.Empty _ -> return ()
+    -- Latte.Abs.BStmt _ block -> ""
+    -- Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
+    --   Latte.Abs.NoInit _ ident -> ""
+    --   Latte.Abs.Init _ ident expr ->""
+    -- Latte.Abs.Ass p ident expr -> ""
+    -- Latte.Abs.Cond p expr stmt -> ""
+    -- Latte.Abs.CondElse p expr stmt1 stmt2 ->    ""
+    -- Latte.Abs.While p expr stmt ->     ""
+    -- Latte.Abs.Incr p ident -> ""
+    -- Latte.Abs.Decr p ident -> ""
+    Latte.Abs.Ret p expr -> do
+        e <- compile expr
+        expectedReturnType <- gets expectedReturnType
+        let t = typeToLlvmKeyword expectedReturnType
+        case expectedReturnType of
+            Nothing -> throwError $ "Unexpected return statement " ++ errLocation p
+            Just expectedReturnType -> do
+            checkTypes "return" p expectedReturnType t
+            modify $ \s -> s {returnReachable = True}
+    -- Latte.Abs.VRet p -> ""
+    -- Latte.Abs.SExp _ expr -> ""
+
+
+runCompiler :: (Compile a) => a -> Either String CompilerState
+runCompiler program = execStateT (compile program) $ CompilerState []
