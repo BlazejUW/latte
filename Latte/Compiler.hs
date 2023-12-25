@@ -37,8 +37,8 @@ class CompileExpr a where
 instance CompileExpr Latte.Abs.Expr where
   compilerExpr = \case
     Latte.Abs.ELitInt _ val -> return ("i32 " ++ show val)
---     Latte.Abs.ELitTrue _ -> ""
---     Latte.Abs.ELitFalse _ -> ""
+    Latte.Abs.ELitTrue _ -> return "i1 1"
+    Latte.Abs.ELitFalse _ -> return "i1 0"
 --     Latte.Abs.EString _ _ -> ""
 --     Latte.Abs.EAdd p l op r -> ""
     
@@ -75,24 +75,35 @@ instance Compile Latte.Abs.TopDef where
     let funSignature =  typeToLlvmKeyword retType ++ " @" ++ funName ++ "(" ++ argsStr ++ ")"
     let funHeader = "define " ++ funSignature
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [funHeader] }
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["{"] }
     compile block
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"] }
 
 
 
 instance Compile Latte.Abs.Block where
     compile (Latte.Abs.Block _ stmts) = do
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["{"] }
-        forM_ stmts compile 
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"] }
+        forM_ stmts compile   
 
 
 instance Compile Latte.Abs.Stmt where
   compile = \case
     Latte.Abs.Empty _ -> return ()
-    -- Latte.Abs.BStmt _ block -> ""
-    -- Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
-    --   Latte.Abs.NoInit _ ident -> ""
-    --   Latte.Abs.Init _ ident expr ->""
+    Latte.Abs.BStmt _ block -> compile block
+    Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
+      Latte.Abs.NoInit _ ident -> do
+        let varName = name ident
+        let varType = keywordToType type_
+        let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
+      Latte.Abs.Init _ ident expr -> do 
+        let varName = name ident
+        let varType = keywordToType type_
+        let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
+        e <- compilerExpr expr
+        let varAssignment = "store " ++ e ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
     -- Latte.Abs.Ass p ident expr -> ""
     -- Latte.Abs.Cond p expr stmt -> ""
     -- Latte.Abs.CondElse p expr stmt1 stmt2 ->    ""
@@ -100,17 +111,13 @@ instance Compile Latte.Abs.Stmt where
     -- Latte.Abs.Incr p ident -> ""
     -- Latte.Abs.Decr p ident -> ""
     Latte.Abs.Ret p expr -> do
-      e <- compilerExpr expr  -- Użyj pattern matchingu, aby uzyskać pierwszy element
+      e <- compilerExpr expr 
       let returnText = "ret " ++ e
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }          
-      -- expectedReturnType <- gets expectedReturnType
-          -- case expectedReturnType of
-          --     Just expectedReturnType -> do
-          --       let t = typeToLlvmKeyword expectedReturnType
-          --       let returnText = "ret " ++ t ++ " " ++ e
-          --       modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }
     -- Latte.Abs.VRet p -> ""
-    -- Latte.Abs.SExp _ expr -> ""
+    Latte.Abs.SExp _ expr -> do
+      e  <- compilerExpr expr
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }    
     other -> throwError $ "Not implemented: " ++ show other
 
 runCompiler :: (Compile a) => a -> Either String CompilerState
