@@ -4,7 +4,7 @@ import Prelude
   ( ($), (.)
   , Either(..)
   , Int, (>)
-  , String, (++), concat, unlines
+  , String, (++), concat, unwords, unlines
   , Show, show
   , IO, (>>), (>>=), mapM_, putStrLn, putStr
   , FilePath
@@ -67,7 +67,7 @@ run v p s =
 
               putStrV v "\n[Output]"
               -- let lines = unlines $ reverse (compilerOutput s)
-              let lines = unlines (compilerOutput s)
+              let lines = unwords (compilerOutput s)
               putStr lines
               -- exitWith $ exitCode s
   where
