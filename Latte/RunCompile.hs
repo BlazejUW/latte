@@ -66,7 +66,8 @@ run v p s =
               putStrV v $ "\n[Final State]\n\n" ++ show s
 
               putStrV v "\n[Output]"
-              let lines = unlines $ reverse (compilerOutput s)
+              -- let lines = unlines $ reverse (compilerOutput s)
+              let lines = unlines (compilerOutput s)
               putStr lines
               -- exitWith $ exitCode s
   where

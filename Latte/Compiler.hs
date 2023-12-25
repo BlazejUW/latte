@@ -21,8 +21,8 @@ import qualified Distribution.Simple as Latte
 
 data CompilerState = CompilerState
   { 
-    compilerOutput :: CompilerOutput,
-    expectedReturnType :: Maybe Type
+    compilerOutput :: CompilerOutput
+    -- expectedReturnType :: Maybe Type
   }
   deriving (Eq, Ord, Show)
 
@@ -32,11 +32,11 @@ type CompilerOutput = [String]
 
 
 class CompileExpr a where
-  compilerExpr :: a -> CompilerOutput
+  compilerExpr :: a -> LCS String
 
--- instance CompileExpr Latte.Abs.Expr where
---   compilerExpr = \case
---     Latte.Abs.ELitInt _ ident -> "i32 %" ++ ident
+instance CompileExpr Latte.Abs.Expr where
+  compilerExpr = \case
+    Latte.Abs.ELitInt _ val -> return ("i32 " ++ show val)
 --     Latte.Abs.ELitTrue _ -> ""
 --     Latte.Abs.ELitFalse _ -> ""
 --     Latte.Abs.EString _ _ -> ""
@@ -100,17 +100,18 @@ instance Compile Latte.Abs.Stmt where
     -- Latte.Abs.Incr p ident -> ""
     -- Latte.Abs.Decr p ident -> ""
     Latte.Abs.Ret p expr -> do
-        e <- compile expr
-        expectedReturnType <- gets expectedReturnType
-        let t = typeToLlvmKeyword expectedReturnType
-        case expectedReturnType of
-            Nothing -> throwError $ "Unexpected return statement " ++ errLocation p
-            Just expectedReturnType -> do
-            checkTypes "return" p expectedReturnType t
-            modify $ \s -> s {returnReachable = True}
+      e <- compilerExpr expr  -- Użyj pattern matchingu, aby uzyskać pierwszy element
+      let returnText = "ret " ++ e
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }          
+      -- expectedReturnType <- gets expectedReturnType
+          -- case expectedReturnType of
+          --     Just expectedReturnType -> do
+          --       let t = typeToLlvmKeyword expectedReturnType
+          --       let returnText = "ret " ++ t ++ " " ++ e
+          --       modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }
     -- Latte.Abs.VRet p -> ""
     -- Latte.Abs.SExp _ expr -> ""
-
+    other -> throwError $ "Not implemented: " ++ show other
 
 runCompiler :: (Compile a) => a -> Either String CompilerState
 runCompiler program = execStateT (compile program) $ CompilerState []
