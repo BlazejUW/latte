@@ -1,0 +1,9 @@
+int foo(int a, boolean b){
+    a++;
+    return 0;
+
+}
+
+int main(){
+    return foo(1, true);
+}
