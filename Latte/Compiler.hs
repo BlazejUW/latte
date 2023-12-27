@@ -23,7 +23,8 @@ data CompilerState = CompilerState
   { 
     compilerOutput :: CompilerOutput,
     compilerVariables :: Map String Type,
-    indirectVariablesCounter :: Int
+    indirectVariablesCounter :: Int,
+    functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type 
     -- expectedReturnType :: Maybe Type
   }
   deriving (Eq, Ord, Show)
@@ -67,7 +68,21 @@ instance CompileExpr Latte.Abs.Expr where
                              indirectVariablesCounter = counter}
           return $ typeToLlvmKeyword varType ++ " %" ++ show counter
         Nothing -> throwError $ "Variable not defined: " ++ varName
---     Latte.Abs.EApp p ident exprs -> ""
+    -- Latte.Abs.EApp p ident exprs -> do
+    --   argsWithTypes <- mapM compilerExpr exprs
+    --   let argTypes = map snd argsWithTypes
+    --   let argCode = map fst argsWithTypes
+    --   let functionName = name ident
+    --   s <- get
+    --   let signature = case Map.lookup (ident, argTypes) (functionsSignatures s) of
+    --                     Just retType -> retType
+    --                     Nothing -> error $ "Function signature not found for: " ++ functionName
+    --   let callCode = "call " ++ typeToLlvmKeyword signature ++ " @" ++ functionName ++ "(" ++ intercalate ", " argCode ++ ")"
+    --   return (typeToLlvmKeyword signature, callCode)
+      -- let funName = functionName ident
+      -- let funSignature = "@" ++ funName ++ "(" ++ intercalate ", " (map compilerExpr exprs) ++ ")"
+      -- let callInstr = "call " ++ typeToLlvmKeyword (keywordToType (Latte.Abs.type_ ident)) ++ " " ++ funSignature
+      -- return callInstr
 
 
 getVariableType :: String -> LCS Type
@@ -185,5 +200,5 @@ commonDecrIncrOperation ident op = do
     Nothing -> throwError $ "Variable not defined: " ++ varName
 
 
-runCompiler :: (Compile a) => a -> Either String CompilerState
-runCompiler program = execStateT (compile program) $ CompilerState [] Map.empty 0
+runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Either String CompilerState
+runCompiler program functionsSignatures = execStateT (compile program) $ CompilerState [] Map.empty 0 functionsSignatures

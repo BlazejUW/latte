@@ -20,7 +20,7 @@ import Latte.Lex   ( Token, mkPosToken )
 import Latte.Par   ( pProgram, myLexer )
 import Latte.Print ( Print, printTree )
 --TODO compiler
-import Latte.Typechecker (runTypechecker, Typecheck, TypecheckerState)
+import Latte.Typechecker (runTypechecker, functionsSignatures, Typecheck, TypecheckerState)
 import Latte.Compiler (Compile, runCompiler, compilerOutput, CompilerState)
 
 type Err        = Either String
@@ -53,8 +53,9 @@ run v p s =
           exitFailure
         Right s -> do
           putStrV v "\n## Typechecking Successful!"
+          let functions = functionsSignatures s
         --   putStrV v $ "\n[Final State]\n\n" ++ show s
-          let result = runCompiler tree
+          let result = runCompiler tree functions
             -- putStrLn (show result)
           case result of
             Left err -> do
