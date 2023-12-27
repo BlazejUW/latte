@@ -1,0 +1,4 @@
+int main(){
+    int alicjaMakota = 5;
+    alicjaMakota++;
+}
