@@ -18,13 +18,15 @@ import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword)
 import Data.Void (Void)
 import qualified Distribution.Simple as Latte
+-- import Latte.Typechecker (TypecheckerState)
 
 data CompilerState = CompilerState
-  { 
+  {
     compilerOutput :: CompilerOutput,
     compilerVariables :: Map String Type,
     indirectVariablesCounter :: Int,
-    functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type 
+    functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
+    exprTypes :: Map Latte.Abs.Expr Type
     -- expectedReturnType :: Maybe Type
   }
   deriving (Eq, Ord, Show)
@@ -33,15 +35,21 @@ type LCS a = StateT CompilerState (Either CompilerError) a
 type CompilerError = String
 type CompilerOutput = [String]
 
+getExpressionType :: Latte.Abs.Expr -> LCS Type
+getExpressionType expr = do
+  s <- get
+  case Map.lookup expr (exprTypes s) of
+    Just t -> return t
+    Nothing -> throwError $ "Expression type not found: " ++ show expr
 
 class CompileExpr a where
   compilerExpr :: a -> LCS String
 
 instance CompileExpr Latte.Abs.Expr where
   compilerExpr = \case
-    Latte.Abs.ELitInt _ val -> return ("i32 " ++ show val)
-    Latte.Abs.ELitTrue _ -> return "i1 1"
-    Latte.Abs.ELitFalse _ -> return "i1 0"
+    Latte.Abs.ELitInt _ val -> return (show val)
+    Latte.Abs.ELitTrue _ -> return "1"
+    Latte.Abs.ELitFalse _ -> return "0"
 --     Latte.Abs.EString _ _ -> ""
     Latte.Abs.EAdd p l op r -> do
       l' <- compilerExpr l
@@ -50,7 +58,7 @@ instance CompileExpr Latte.Abs.Expr where
             Latte.Abs.Plus _ -> "add"
             Latte.Abs.Minus _ -> "sub"
       return $ op' ++ " i32 " ++ l' ++ ", " ++ r'
-    
+
 --     Latte.Abs.EMul p l op r -> ""
 --     Latte.Abs.Neg p expr -> ""
 --     Latte.Abs.EAnd p l r -> ""
@@ -60,29 +68,43 @@ instance CompileExpr Latte.Abs.Expr where
     Latte.Abs.EVar p ident -> do
       s <- get
       let varName = name ident
-      let counter = indirectVariablesCounter s + 1 
+      let counter = indirectVariablesCounter s + 1
       case Map.lookup varName (compilerVariables s) of
         Just varType -> do
           let loadInstr = "%" ++ show counter ++ " = load " ++ typeToLlvmKeyword varType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ [loadInstr], 
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [loadInstr],
                              indirectVariablesCounter = counter}
-          return $ typeToLlvmKeyword varType ++ " %" ++ show counter
+          return $ "%" ++ show counter
         Nothing -> throwError $ "Variable not defined: " ++ varName
-    -- Latte.Abs.EApp p ident exprs -> do
-    --   argsWithTypes <- mapM compilerExpr exprs
-    --   let argTypes = map snd argsWithTypes
-    --   let argCode = map fst argsWithTypes
-    --   let functionName = name ident
-    --   s <- get
-    --   let signature = case Map.lookup (ident, argTypes) (functionsSignatures s) of
-    --                     Just retType -> retType
-    --                     Nothing -> error $ "Function signature not found for: " ++ functionName
-    --   let callCode = "call " ++ typeToLlvmKeyword signature ++ " @" ++ functionName ++ "(" ++ intercalate ", " argCode ++ ")"
-    --   return (typeToLlvmKeyword signature, callCode)
+    Latte.Abs.EApp p ident exprs -> do
+      argExprs <- mapM compilerExpr exprs
+      s <- get
+      argTypes <- mapM getExpressionType exprs
+      let funType = case Map.lookup (ident, argTypes) (functionsSignatures s) of
+            Just t -> t
+            _ -> error $ "Function " ++ functionName (ident, argTypes) ++ " not found"
+
+      let argsCall = intercalate ", " (zipWith (\ t e -> t ++ " " ++ e) (map typeToLlvmKeyword argTypes) argExprs)
+      let funCall = "call " ++ typeToLlvmKeyword funType ++ " @" ++ show ident ++ "(" ++ argsCall ++ ")"
+      return "A"
+      -- let argTypes = map (fromJust . flip Map.lookup (exprTypes s)) args  -- Użyj `fromJust` z założeniem, że typy są zawsze dostępne
+      -- -- Znajdź sygnaturę funkcji
+      -- case Map.lookup (ident, argTypes) (functionsSignatures s) of
+      --   Just returnType -> do
+      --     let callCode = "call " ++ typeToLlvmKeyword returnType ++ " @" ++ name ident ++ "(" ++ intercalate ", " argExprs ++ ")"
+      --     return callCode
+      --   Nothing -> throwError $ "Function signature not found for: " ++ name ident
+
       -- let funName = functionName ident
-      -- let funSignature = "@" ++ funName ++ "(" ++ intercalate ", " (map compilerExpr exprs) ++ ")"
-      -- let callInstr = "call " ++ typeToLlvmKeyword (keywordToType (Latte.Abs.type_ ident)) ++ " " ++ funSignature
-      -- return callInstr
+      -- s <- get
+      -- exprs <- forM exprs compilerExpr
+
+      -- let funSignature = case Map.lookup (ident, map compilerExprType exprs) (functionsSignatures s) of
+      --       Just t -> t
+      --       _ -> error $ "Function " ++ funName ++ " not found"
+      -- let funCall = "call " ++ typeToLlvmKeyword funSignature ++ " @" ++ funName ++ "(" ++ intercalate ", " (map compilerExpr exprs) ++ ")"
+      -- return funCall
+
 
 
 getVariableType :: String -> LCS Type
@@ -100,6 +122,11 @@ getNextIndirectVariableAndUpdate = do
   let counter = indirectVariablesCounter s + 1
   modify $ \s -> s { indirectVariablesCounter = counter }
   return counter
+
+combineTypeAndIndentOfExpr :: Latte.Abs.Expr -> String -> LCS String
+combineTypeAndIndentOfExpr expr exprStr = do
+  exprType <- getExpressionType expr
+  return $ typeToLlvmKeyword exprType ++ " " ++ exprStr
 
 class Compile a where
   compile :: a -> LCS ()
@@ -131,7 +158,7 @@ instance Compile Latte.Abs.TopDef where
 
 instance Compile Latte.Abs.Block where
     compile (Latte.Abs.Block _ stmts) = do
-        forM_ stmts compile   
+        forM_ stmts compile
 
 
 instance Compile Latte.Abs.Stmt where
@@ -141,18 +168,19 @@ instance Compile Latte.Abs.Stmt where
     Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
       Latte.Abs.NoInit _ ident -> do
         let varName = name ident
-        let varType = keywordToType type_ 
+        let varType = keywordToType type_
         modify $ \s -> s { compilerVariables = Map.insert varName varType (compilerVariables s)}
         let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
         modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
-      Latte.Abs.Init _ ident expr -> do 
+      Latte.Abs.Init _ ident expr -> do
         let varName = name ident
         let varType = keywordToType type_
         modify $ \s -> s { compilerVariables = Map.insert varName varType (compilerVariables s)}
         let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
         modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
         e <- compilerExpr expr
-        let varAssignment = "store " ++ e ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
+        exprWithType <- combineTypeAndIndentOfExpr expr e
+        let varAssignment = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
         modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
     Latte.Abs.Ass p ident expr -> do
       s <- get
@@ -160,8 +188,9 @@ instance Compile Latte.Abs.Stmt where
       case Map.lookup varName (compilerVariables s) of
         Just varType -> do
           e <- compilerExpr expr
-          let storeInstr = "store " ++ e ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
-          modify $ \s -> s { 
+          exprWithType <- combineTypeAndIndentOfExpr expr e
+          let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
+          modify $ \s -> s {
             compilerOutput = compilerOutput s ++ [storeInstr],
             compilerVariables = Map.insert varName varType (compilerVariables s)
           }
@@ -173,15 +202,17 @@ instance Compile Latte.Abs.Stmt where
       commonDecrIncrOperation ident "add"
     Latte.Abs.Decr p ident -> do
       commonDecrIncrOperation ident "sub"
-      
+
     Latte.Abs.Ret p expr -> do
-      e <- compilerExpr expr 
-      let returnText = "ret " ++ e
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }          
+      e <- compilerExpr expr
+      exprWithType <- combineTypeAndIndentOfExpr expr e
+      let returnText = "ret" ++ " " ++ exprWithType
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }
+
     -- Latte.Abs.VRet p -> ""
     Latte.Abs.SExp _ expr -> do
       e  <- compilerExpr expr
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }    
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }
     other -> throwError $ "Not implemented: " ++ show other
 
 commonDecrIncrOperation ident op = do
@@ -194,11 +225,11 @@ commonDecrIncrOperation ident op = do
       nextCounter <- getNextIndirectVariableAndUpdate
       let opInstr = "%" ++ show nextCounter ++ " = "++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ show counter ++ ", 1"
       let storeInstr = "store " ++ typeToLlvmKeyword varType ++ " %" ++ show nextCounter ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
-      modify $ \s -> s { 
+      modify $ \s -> s {
         compilerOutput = compilerOutput s ++ [loadInstr, opInstr, storeInstr]
       }
     Nothing -> throwError $ "Variable not defined: " ++ varName
 
 
-runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Either String CompilerState
-runCompiler program functionsSignatures = execStateT (compile program) $ CompilerState [] Map.empty 0 functionsSignatures
+runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type -> Either String CompilerState
+runCompiler program functionsSignatures exprTypes = execStateT (compile program) $ CompilerState [] Map.empty 0 functionsSignatures exprTypes

@@ -22,7 +22,8 @@ data TypecheckerState = TypecheckerState
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type, 
     variables :: Map Latte.Abs.Ident Type,
     expectedReturnType :: Maybe Type,
-    returnReachable :: Bool
+    returnReachable :: Bool,
+    exprTypes :: Map Latte.Abs.Expr Type
   }
   deriving (Eq, Ord, Show)
 
@@ -37,51 +38,71 @@ class TypecheckExpr a where
   typecheckExpr :: a -> LTS Type
 
 instance TypecheckExpr Latte.Abs.Expr where
-  typecheckExpr = \case
-    Latte.Abs.ELitInt _ _ -> return Integer
-    Latte.Abs.ELitTrue _ -> return Boolean
-    Latte.Abs.ELitFalse _ -> return Boolean
-    Latte.Abs.EString _ _ -> return String
+  typecheckExpr node = case node of
+    Latte.Abs.ELitInt _ _ -> do
+      modify $ \s -> s {exprTypes = Map.insert node Integer (exprTypes s)}
+      return Integer
+    Latte.Abs.ELitTrue _ -> do
+      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
+      return Boolean
+    Latte.Abs.ELitFalse _ -> do
+      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
+      return Boolean
+    Latte.Abs.EString _ _ -> do
+      modify $ \s -> s {exprTypes = Map.insert node String (exprTypes s)}
+      return String
     Latte.Abs.EAdd p l op r -> do
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "arithmethics operator" p lType rType
+      modify $ \s -> s {exprTypes = Map.insert node lType (exprTypes s)}
+      -- poszukać czy w haskellu jest jakaś funkcja, która będzie cache'ować węzeł i typ
       return lType
     Latte.Abs.EMul p l op r -> do
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "arithmethics operator" p lType rType
+      modify $ \s -> s {exprTypes = Map.insert node lType (exprTypes s)}
       return lType
     Latte.Abs.Neg p expr -> do
       t <- typecheckExpr expr
       case t of
-        Integer -> return Integer
+        Integer -> do
+          modify $ \s -> s {exprTypes = Map.insert node Integer (exprTypes s)}
+          return Integer
         other -> throwError $ "Type mismatch for unary minus (expected int but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.EAnd p l r -> do
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "&&" p lType rType
+      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
       return Boolean
     Latte.Abs.EOr p l r -> do
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "||" p lType rType
+      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
       return Boolean
     Latte.Abs.Not p expr -> do
       t <- typecheckExpr expr
       case t of
-        Boolean -> return Boolean
+        Boolean -> do
+          modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
+          return Boolean
         other -> throwError $ "Type mismatch for unary not (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.ERel p l op r -> do
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "comparison operator" p lType rType
+      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
       return Boolean
     Latte.Abs.EVar p ident -> do
       s <- get
       let localVar = Map.lookup ident (variables s)
       case localVar of
-        Just type_ -> return type_
+        Just type_ -> do
+          modify $ \s -> s {exprTypes = Map.insert node type_ (exprTypes s)}
+          return type_
         _ -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       s <- get
@@ -90,6 +111,7 @@ instance TypecheckExpr Latte.Abs.Expr where
       case Map.lookup key (functionsSignatures s) of
         Nothing -> throwError $ "Function " ++ functionName key ++ " not found " ++ errLocation p
         Just t-> do
+          modify $ \s -> s {exprTypes = Map.insert node t (exprTypes s)}
           return t
 
 class Typecheck a where
@@ -134,7 +156,8 @@ instance Typecheck Latte.Abs.Block where
     originalState <- get
     forM_ stmts typecheck
     returnReached <- gets returnReachable
-    put originalState
+    currentState <- get
+    put $ originalState { exprTypes = exprTypes currentState }
     modify $ \s -> s {returnReachable = returnReached}
 
 instance Typecheck Latte.Abs.Stmt where
@@ -260,6 +283,7 @@ runTypechecker program = execStateT (typecheck program) initialState
       , variables = Map.empty
       , expectedReturnType = Nothing
       , returnReachable = False
+      , exprTypes = Map.empty
       }
 
     predefFunctions = Map.fromList
