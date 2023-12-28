@@ -1,0 +1,8 @@
+int main(){
+    int i = 0;
+    if(true){
+        i++;
+        printInt(i);
+    }
+    return 0;
+}

@@ -191,11 +191,12 @@ instance Typecheck Latte.Abs.Stmt where
             Latte.Abs.ELitTrue _ -> do
               typecheck stmt
               currentState <- get
-              put originalState
+              put $ originalState { exprTypes = exprTypes currentState }
               modify $ \s -> s {returnReachable = returnReachable currentState}
             _ -> do
               typecheck stmt
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.CondElse p expr stmt1 stmt2 -> do
       t <- typecheckExpr expr
@@ -209,23 +210,28 @@ instance Typecheck Latte.Abs.Stmt where
               typecheck stmt1
               ifReturnReached <- gets returnReachable
               typecheck stmt2
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
               modify $ \s -> s {returnReachable = ifReturnReached || originalReachable}
             Latte.Abs.ELitFalse _ -> do
               typecheck stmt1
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
               typecheck stmt2
               elseReturnReached <- gets returnReachable
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
               modify $ \s -> s {returnReachable = elseReturnReached || originalReachable}
             _ -> do
               typecheck stmt1
               ifReturnReached1 <- gets returnReachable
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
               modify $ \s -> s {returnReachable = False}
               typecheck stmt2
               ifReturnReached2 <- gets returnReachable
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
               modify $ \s -> s {returnReachable = (ifReturnReached1 && ifReturnReached2) || originalReachable}
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.While p expr stmt -> do
@@ -237,10 +243,11 @@ instance Typecheck Latte.Abs.Stmt where
           case expr of
             Latte.Abs.ELitTrue _ -> do
               currentState <- get
-              put originalState
+              put $ originalState { exprTypes = exprTypes currentState }
               modify $ \s -> s {returnReachable = returnReachable currentState}
             _ -> do
-              put originalState
+              currentState <- get
+              put $ originalState { exprTypes = exprTypes currentState }
         other -> throwError $ "Type mismatch for while condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.Incr p ident -> typecheckDecrIncr p ident
     Latte.Abs.Decr p ident -> typecheckDecrIncr p ident

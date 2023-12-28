@@ -24,6 +24,7 @@ data CompilerState = CompilerState
     compilerOutput :: CompilerOutput,
     compilerVariables :: Map String Type,
     indirectVariablesCounter :: Int,
+    labelCounter :: Int,
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     exprTypes :: Map Latte.Abs.Expr Type,
     functionToDeclare :: Map (Latte.Abs.Ident, [Type]) Type,
@@ -129,6 +130,13 @@ getNextIndirectVariableAndUpdate = do
   s <- get
   let counter = indirectVariablesCounter s + 1
   modify $ \s -> s { indirectVariablesCounter = counter }
+  return counter
+
+getNextLabelCounterAndUpdate :: LCS Int
+getNextLabelCounterAndUpdate = do
+  s <- get
+  let counter =  labelCounter s + 1
+  modify $ \s -> s { labelCounter = counter }
   return counter
 
 findOrDeclareString :: String -> LCS Int
@@ -241,22 +249,43 @@ instance Compile Latte.Abs.Stmt where
               compilerOutput = compilerOutput s ++ [storeInstr]
             }
         Nothing -> throwError $ "Variable not defined: " ++ varName
-    -- Latte.Abs.Cond p expr stmt -> ""
-    -- Latte.Abs.CondElse p expr stmt1 stmt2 ->    ""
+    Latte.Abs.Cond p expr stmt -> do
+      e <- compilerExpr expr
+      counter <- getNextLabelCounterAndUpdate
+      let trueLabel = "if_true_" ++ show counter
+      let endLabel = "if_end_" ++ show counter
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+      compile stmt
+      let br_instruction = "br label %" ++ endLabel
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [br_instruction, endLabel ++ ":"] } --TODO sprawdzić na students czy też potrzeba br
+    Latte.Abs.CondElse p expr stmt1 stmt2 -> do
+      e <- compilerExpr expr
+      counter <- getNextLabelCounterAndUpdate
+      let trueLabel = "if_true_" ++ show counter
+      let falseLabel = "if_false_" ++ show counter
+      let endLabel = "if_end_" ++ show counter
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+      compile stmt1
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
+      compile stmt2
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
     -- Latte.Abs.While p expr stmt ->     ""
     Latte.Abs.Incr p ident -> do
       commonDecrIncrOperation ident "add"
     Latte.Abs.Decr p ident -> do
       commonDecrIncrOperation ident "sub"
-
     Latte.Abs.Ret p expr -> do
       e <- compilerExpr expr
       exprWithType <- combineTypeAndIndentOfExpr expr e
       let returnText = "ret" ++ " " ++ exprWithType
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }
-
-    -- Latte.Abs.VRet p -> ""
-    Latte.Abs.SExp _ expr -> do
+    Latte.Abs.VRet p -> 
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
+    Latte.Abs.SExp _ expr -> do --TODO
       e  <- compilerExpr expr
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }
     other -> throwError $ "Not implemented: " ++ show other
@@ -284,4 +313,4 @@ commonDecrIncrOperation ident op = do
 
 runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type -> Either String CompilerState
 runCompiler program functionsSignatures exprTypes = execStateT (compile program) $ CompilerState ["declare i32 @printString(i8* %str)", "declare i32 @printInt(i32 %i)"] 
-    Map.empty 0 functionsSignatures exprTypes Map.empty Map.empty Map.empty
+    Map.empty 0 0 functionsSignatures exprTypes Map.empty Map.empty Map.empty
