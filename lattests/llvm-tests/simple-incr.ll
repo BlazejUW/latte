@@ -1,3 +1,5 @@
+declare i32 @printString(i8* %str)
+declare i32 @printInt(i32 %i)
 define i32 @main() {
     %alicjaMakota = alloca i32
     store i32 5, i32* %alicjaMakota

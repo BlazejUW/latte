@@ -8,7 +8,7 @@ module Latte.Helpers where
 
 import qualified Latte.Abs
 
-data Type = Integer | String | Boolean | Void deriving (Eq, Ord, Show) --tutaj pomyslec co z voidem i z fun
+data Type = Integer | String | Boolean | Void deriving (Eq, Ord, Show)
 
 typeToKeyword :: Type -> String 
 typeToKeyword = \case
@@ -42,3 +42,11 @@ errLocation :: (Show a1, Show a2) => Maybe (a1, a2) -> String
 errLocation p = case p of
   Nothing -> "at unknown location"
   Just (line, col) -> "at line " ++ show line ++ ", column " ++ show col
+
+convertToLlvmChar :: Char -> String
+convertToLlvmChar c = case c of
+  '\n' -> "\\0A" -- Nowa linia
+  '\t' -> "\\09" -- Tabulator
+  '\"' -> "\\22" -- Cudzysłów
+  '\\' -> "\\5C" -- Backslash
+  _    -> [c]

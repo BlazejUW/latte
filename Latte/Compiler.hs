@@ -15,10 +15,9 @@ import qualified Data.Map as Map
 import Data.Maybe (isJust)
 import Data.List (intercalate)
 import qualified Latte.Abs
-import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword)
+import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword, convertToLlvmChar)
 import Data.Void (Void)
 import qualified Distribution.Simple as Latte
--- import Latte.Typechecker (TypecheckerState)
 
 data CompilerState = CompilerState
   {
@@ -28,8 +27,8 @@ data CompilerState = CompilerState
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     exprTypes :: Map Latte.Abs.Expr Type,
     functionToDeclare :: Map (Latte.Abs.Ident, [Type]) Type,
-    arguments :: Map String Type
-    -- expectedReturnType :: Maybe Type
+    arguments :: Map String Type,
+    stringPool :: Map String Int
   }
   deriving (Eq, Ord, Show)
 
@@ -52,7 +51,22 @@ instance CompileExpr Latte.Abs.Expr where
     Latte.Abs.ELitInt _ val -> return (show val)
     Latte.Abs.ELitTrue _ -> return "1"
     Latte.Abs.ELitFalse _ -> return "0"
---     Latte.Abs.EString _ _ -> ""
+    -- Here we should 
+    Latte.Abs.EString _ str -> do
+      stringId <- findOrDeclareString str
+      let strLabel = "@str" ++ show stringId
+      let llvmString = convertToLlvmString str
+      let stringLength = length str + 1
+      nextIndirectVariable <- getNextIndirectVariableAndUpdate
+      -- --add srtLabel to variables
+      -- let varType = String
+      -- modify $ \s -> s { compilerVariables = Map.insert strLabel varType (compilerVariables s)}
+      let declaration = strLabel ++ " = private unnamed_addr constant [" ++ show stringLength ++ " x i8] c\"" ++ llvmString ++ "\""
+      let call = "%"++ show nextIndirectVariable ++ " = getelementptr inbounds [" ++ show stringLength ++ 
+                  " x i8], [" ++ show stringLength ++ " x i8]* " ++ strLabel ++ ", i32 0, i32 0"
+      modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
+      modify $ \s -> s {compilerOutput = compilerOutput s ++ [call]}
+      return $ "%" ++ show nextIndirectVariable
     Latte.Abs.EAdd p l op r -> do
       l' <- compilerExpr l
       r' <- compilerExpr r
@@ -74,8 +88,8 @@ instance CompileExpr Latte.Abs.Expr where
         Just varType -> do
           counter <- getNextIndirectVariableAndUpdate
           let loadInstr = if Map.member varName (arguments s)
-                          then "%" ++ show counter ++ " = " ++ typeToLlvmKeyword varType ++ " %" ++ varName -- Obsługa argumentu
-                          else "%" ++ show counter ++ " = load " ++ typeToLlvmKeyword varType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName -- Obsługa zmiennej lokalnej
+                          then "%" ++ show counter ++ " = " ++ typeToLlvmKeyword varType ++ " %" ++ varName
+                          else "%" ++ show counter ++ " = load " ++ typeToLlvmKeyword varType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [loadInstr]}
           return $ "%" ++ show counter
         Nothing -> throwError $ "Variable not defined: " ++ varName
@@ -87,7 +101,6 @@ instance CompileExpr Latte.Abs.Expr where
       let funType = case Map.lookup (ident, argTypes) (functionsSignatures s) of
             Just t -> t
             _ -> error $ "Function " ++ functionName (ident, argTypes) ++ " not found"
-
       let argsCall = intercalate ", " (zipWith (\ t e -> t ++ " " ++ e) (map typeToLlvmKeyword argTypes) argExprs)
       let funCall = "call " ++ typeToLlvmKeyword funType ++ " @" ++ name ident ++ "(" ++ argsCall ++ ")" 
       case funType of
@@ -117,6 +130,21 @@ getNextIndirectVariableAndUpdate = do
   let counter = indirectVariablesCounter s + 1
   modify $ \s -> s { indirectVariablesCounter = counter }
   return counter
+
+findOrDeclareString :: String -> LCS Int
+findOrDeclareString str = do
+  s <- get
+  let stringPool = Latte.Compiler.stringPool s
+  case Map.lookup str stringPool of
+    Just index -> return index
+    Nothing -> do
+      let index = Map.size stringPool
+      modify $ \s -> s { stringPool = Map.insert str index stringPool }
+      return index
+
+convertToLlvmString :: String -> String
+convertToLlvmString s = concatMap convertToLlvmChar s ++ "\\00"
+
 
 combineTypeAndIndentOfExpr :: Latte.Abs.Expr -> String -> LCS String
 combineTypeAndIndentOfExpr expr exprStr = do
@@ -255,4 +283,5 @@ commonDecrIncrOperation ident op = do
 
 
 runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type -> Either String CompilerState
-runCompiler program functionsSignatures exprTypes = execStateT (compile program) $ CompilerState [] Map.empty 0 functionsSignatures exprTypes Map.empty Map.empty
+runCompiler program functionsSignatures exprTypes = execStateT (compile program) $ CompilerState ["declare i32 @printString(i8* %str)", "declare i32 @printInt(i32 %i)"] 
+    Map.empty 0 functionsSignatures exprTypes Map.empty Map.empty Map.empty

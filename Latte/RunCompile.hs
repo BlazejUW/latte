@@ -69,6 +69,7 @@ run v p s =
 
               putStrV v "\n[Output]"
               -- let lines = unlines $ reverse (compilerOutput s)
+              --w unwords (compilerOutput s) nie wypisywać pustych elementów tablicy compilerOutput
               let lines = unwords (compilerOutput s)
               putStr lines
               -- exitWith $ exitCode s

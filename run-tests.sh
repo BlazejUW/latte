@@ -27,9 +27,9 @@ trap 'rm -f temp_output.ll temp_minified_output.ll temp_minified_expected.ll' EX
 for file in ./lattests/llvm-tests/*.lat; do
     echo -n "Running test $file... "
     ./Latte/RunCompile "$file" > temp_output.ll 
-    # python3 minify_llvm.py temp_output.ll temp_minified_output.ll
+    python3 minify_llvm.py temp_output.ll temp_minified_output.ll
     python3 minify_llvm.py "${file%.lat}.ll" temp_minified_expected.ll
-    diff -u temp_output.ll temp_minified_expected.ll && echo -e $OK || exit 1
+    diff -u temp_minified_output.ll temp_minified_expected.ll && echo -e $OK || exit 1
 done
 
 
