@@ -51,7 +51,6 @@ instance CompileExpr Latte.Abs.Expr where
     Latte.Abs.ELitInt _ val -> return (show val)
     Latte.Abs.ELitTrue _ -> return "1"
     Latte.Abs.ELitFalse _ -> return "0"
-    -- Here we should 
     Latte.Abs.EString _ str -> do
       stringId <- findOrDeclareString str
       let strLabel = "@str" ++ show stringId
@@ -73,8 +72,9 @@ instance CompileExpr Latte.Abs.Expr where
       let op' = case op of
             Latte.Abs.Plus _ -> "add"
             Latte.Abs.Minus _ -> "sub"
-      return $ op' ++ " i32 " ++ l' ++ ", " ++ r'
-
+      counter <- getNextIndirectVariableAndUpdate
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
+      return $ "%" ++ show counter
 --     Latte.Abs.EMul p l op r -> ""
 --     Latte.Abs.Neg p expr -> ""
 --     Latte.Abs.EAnd p l r -> ""
