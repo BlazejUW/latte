@@ -76,12 +76,56 @@ instance CompileExpr Latte.Abs.Expr where
       counter <- getNextIndirectVariableAndUpdate
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
       return $ "%" ++ show counter
---     Latte.Abs.EMul p l op r -> ""
---     Latte.Abs.Neg p expr -> ""
---     Latte.Abs.EAnd p l r -> ""
---     Latte.Abs.EOr p l r -> ""
---     Latte.Abs.Not p expr -> ""
---     Latte.Abs.ERel p l op r -> ""
+    Latte.Abs.EMul p l op r -> do
+      l' <- compilerExpr l
+      r' <- compilerExpr r
+      let op' = case op of
+            Latte.Abs.Times _ -> "mul"
+            Latte.Abs.Div _ -> "sdiv"
+            Latte.Abs.Mod _ -> "srem"
+      counter <- getNextIndirectVariableAndUpdate
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
+      return $ "%" ++ show counter
+    Latte.Abs.Neg p expr -> do
+      e <- compilerExpr expr
+      counter <- getNextIndirectVariableAndUpdate
+      let negInstr = "%" ++ show counter ++ " = sub i32 0, " ++ e
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [negInstr] }
+      return $ "%" ++ show counter
+    Latte.Abs.EAnd p l r -> do
+      lExpr <- compilerExpr l
+      rExpr <- compilerExpr r
+      counter <- getNextIndirectVariableAndUpdate
+      let andInstr = "%" ++ show counter ++ " = and i1 " ++ lExpr ++ ", " ++ rExpr
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [andInstr] }
+      return $ "%" ++ show counter
+    Latte.Abs.EOr p l r -> do
+      lExpr <- compilerExpr l
+      rExpr <- compilerExpr r
+      counter <- getNextIndirectVariableAndUpdate
+      let orInstr = "%" ++ show counter ++ " = or i1 " ++ lExpr ++ ", " ++ rExpr
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [orInstr] }
+      return $ "%" ++ show counter
+    Latte.Abs.Not p expr -> do
+      e <- compilerExpr expr
+      counter <- getNextIndirectVariableAndUpdate
+      let notInstr = "%" ++ show counter ++ " = xor i1 " ++ e ++ ", 1"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [notInstr] }
+      return $ "%" ++ show counter
+    Latte.Abs.ERel p l op r -> do
+      lExpr <- compilerExpr l
+      rExpr <- compilerExpr r
+      counter <- getNextIndirectVariableAndUpdate
+      let relOp = case op of
+            Latte.Abs.LTH _ -> "slt"
+            Latte.Abs.LE _ -> "sle"
+            Latte.Abs.GTH _ -> "sgt"
+            Latte.Abs.GE _ -> "sge"
+            Latte.Abs.EQU _ -> "eq"
+            Latte.Abs.NE _ -> "ne"
+      let relInstr = "%" ++ show counter ++ " = icmp " ++ relOp ++ " i32 " ++ lExpr ++ ", " ++ rExpr
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [relInstr] }
+      return $ "%" ++ show counter 
     Latte.Abs.EVar p ident -> do
       s <- get
       let varName = name ident
@@ -177,7 +221,6 @@ instance Compile Latte.Abs.TopDef where
   compile fndef@(Latte.Abs.FnDef p t ident args block) = do
     let retType = keywordToType t
     let argsStr = intercalate ", " (map printArg args)
-    --add args to variables
     forM_ args $ \(Latte.Abs.Arg _ argType ident) -> do
       let varName = name ident
       let varType = keywordToType argType
@@ -188,14 +231,11 @@ instance Compile Latte.Abs.TopDef where
     let funHeader = "define " ++ funSignature
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [funHeader] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["{"] }
-    -- get indirect variables counter and save it and next before block set it to 0
     indirectVariablesCounter <- gets indirectVariablesCounter
     modify $ \s -> s { indirectVariablesCounter = 0 }
     compile block
-    -- restore indirect variables counter
     modify $ \s -> s { indirectVariablesCounter = indirectVariablesCounter }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"] }
-    --delete args from variables
     forM_ args $ \(Latte.Abs.Arg _ _ ident) -> do
       let varName = name ident
       modify $ \s -> s { compilerVariables = Map.delete varName (compilerVariables s),
