@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use lambda-case" #-}
+{-# LANGUAGE BlockArguments #-}
 
 module Latte.Compiler where
 
@@ -27,10 +28,10 @@ data CompilerState = CompilerState
     labelCounter :: Int,
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     exprTypes :: Map Latte.Abs.Expr Type,
-    functionToDeclare :: Map (Latte.Abs.Ident, [Type]) Type,
     arguments :: Map String Type,
     stringPool :: Map String Int,
-    returnReached :: Bool
+    returnReached :: Bool,
+    concatWasDeclared :: Bool
   }
   deriving (Eq, Ord, Show)
 
@@ -63,7 +64,7 @@ instance CompileExpr Latte.Abs.Expr where
       -- let varType = String
       -- modify $ \s -> s { compilerVariables = Map.insert strLabel varType (compilerVariables s)}
       let declaration = strLabel ++ " = private unnamed_addr constant [" ++ show stringLength ++ " x i8] c\"" ++ llvmString ++ "\""
-      let call = "%"++ show nextIndirectVariable ++ " = getelementptr inbounds [" ++ show stringLength ++ 
+      let call = "%"++ show nextIndirectVariable ++ " = getelementptr inbounds [" ++ show stringLength ++
                   " x i8], [" ++ show stringLength ++ " x i8]* " ++ strLabel ++ ", i32 0, i32 0"
       modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
       modify $ \s -> s {compilerOutput = compilerOutput s ++ [call]}
@@ -79,6 +80,11 @@ instance CompileExpr Latte.Abs.Expr where
       case lType of
         String -> do
           let call = "%" ++ show counter ++ " = call i8* @concat(i8* " ++ l' ++ ", i8* " ++ r' ++ ")"
+          --add concat declare to head of compilerOutput if is not there
+          concatWasDeclared <- gets concatWasDeclared
+          unless concatWasDeclared $ do
+            modify $ \s -> s { compilerOutput = "declare i8* @concat(i8*, i8*)" : compilerOutput s }
+            modify $ \s -> s { concatWasDeclared = True }
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
           return $ "%" ++ show counter
         Integer -> do
@@ -124,6 +130,7 @@ instance CompileExpr Latte.Abs.Expr where
     Latte.Abs.ERel p l op r -> do
       lExpr <- compilerExpr l
       rExpr <- compilerExpr r
+      lType <- getExpressionType l
       counter <- getNextIndirectVariableAndUpdate
       let relOp = case op of
             Latte.Abs.LTH _ -> "slt"
@@ -132,9 +139,23 @@ instance CompileExpr Latte.Abs.Expr where
             Latte.Abs.GE _ -> "sge"
             Latte.Abs.EQU _ -> "eq"
             Latte.Abs.NE _ -> "ne"
-      let relInstr = "%" ++ show counter ++ " = icmp " ++ relOp ++ " i32 " ++ lExpr ++ ", " ++ rExpr
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [relInstr] }
-      return $ "%" ++ show counter 
+      case lType of
+        Integer -> do
+          let relInstr = "%" ++ show counter ++ " = icmp " ++ relOp ++ " i32 " ++ lExpr ++ ", " ++ rExpr
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [relInstr] }
+          return $ "%" ++ show counter
+        Boolean -> do
+          let relInstr = "%" ++ show counter ++ " = icmp " ++ relOp ++ " i1 " ++ lExpr ++ ", " ++ rExpr
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [relInstr] }
+          return $ "%" ++ show counter
+        String -> do
+          nextCounter <- getNextIndirectVariableAndUpdate
+          let callStrcmp = "%" ++ show counter ++ " = call i32 @strcmp(i8* " ++ lExpr ++ ", i8* " ++ rExpr ++ ")"
+          let icmpResult = "%" ++ show nextCounter ++ " = icmp " ++ relOp ++ " i32 %" ++ show counter ++ ", 0"
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [callStrcmp, icmpResult] }
+          modify $ \s -> s { compilerOutput = "declare i32 @strcmp(i8*, i8*)" : compilerOutput s }
+          return $ "%" ++ show nextCounter
+        _ -> throwError $ "Comparison not supported for types: " ++ show lType
     Latte.Abs.EVar p ident -> do
       s <- get
       let varName = name ident
@@ -156,7 +177,7 @@ instance CompileExpr Latte.Abs.Expr where
             Just t -> t
             _ -> error $ "Function " ++ functionName (ident, argTypes) ++ " not found"
       let argsCall = intercalate ", " (zipWith (\ t e -> t ++ " " ++ e) (map typeToLlvmKeyword argTypes) argExprs)
-      let funCall = "call " ++ typeToLlvmKeyword funType ++ " @" ++ name ident ++ "(" ++ argsCall ++ ")" 
+      let funCall = "call " ++ typeToLlvmKeyword funType ++ " @" ++ name ident ++ "(" ++ argsCall ++ ")"
       case funType of
         Void -> do
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [funCall] }
@@ -167,7 +188,7 @@ instance CompileExpr Latte.Abs.Expr where
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [callInstr]}
           return $ "%" ++ show counter
       -- jeśli return type to void to nie zwracamy nic, w przeciwnym wypadku zwracamy kolejny counter
-      
+
 
 getVariableType :: String -> LCS Type
 getVariableType identifier = do
@@ -411,14 +432,14 @@ runCompiler program functionsSignatures exprTypes = execStateT (compile program)
       labelCounter = 0,
       functionsSignatures = functionsSignatures,
       exprTypes = exprTypes,
-      functionToDeclare = Map.empty,
       arguments = Map.empty,
       stringPool = Map.empty,
-      returnReached = False
+      returnReached = False,
+      concatWasDeclared = False
     }
 
-    predefFunctions = 
-      [ 
+    predefFunctions =
+      [
         "declare void @printString(i8* %str)",
         "declare void @printInt(i32 %i)",
         "declare void @error()",
