@@ -1,0 +1,9 @@
+int main() {
+    boolean a = true;
+    if (!a) {
+        printInt(0);
+    } else {
+        printInt(1);
+    }
+    return 0;
+}

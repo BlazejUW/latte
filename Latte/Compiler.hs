@@ -29,7 +29,8 @@ data CompilerState = CompilerState
     exprTypes :: Map Latte.Abs.Expr Type,
     functionToDeclare :: Map (Latte.Abs.Ident, [Type]) Type,
     arguments :: Map String Type,
-    stringPool :: Map String Int
+    stringPool :: Map String Int,
+    returnReached :: Bool
   }
   deriving (Eq, Ord, Show)
 
@@ -219,6 +220,7 @@ printArg (Latte.Abs.Arg _ argType ident) =
 
 instance Compile Latte.Abs.TopDef where
   compile fndef@(Latte.Abs.FnDef p t ident args block) = do
+    modify $ \s -> s { returnReached = False }
     let retType = keywordToType t
     let argsStr = intercalate ", " (map printArg args)
     forM_ args $ \(Latte.Abs.Arg _ argType ident) -> do
@@ -244,103 +246,134 @@ instance Compile Latte.Abs.TopDef where
 
 
 instance Compile Latte.Abs.Block where
-    compile (Latte.Abs.Block _ stmts) = do
-        forM_ stmts compile
+  compile (Latte.Abs.Block _ stmts) = do
+    forM_ stmts $ \stmt -> do
+      returnFlag <- gets returnReached
+      unless returnFlag $ compile stmt
 
 
 instance Compile Latte.Abs.Stmt where
-  compile = \case
-    Latte.Abs.Empty _ -> return ()
-    Latte.Abs.BStmt _ block -> compile block
-    Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
-      Latte.Abs.NoInit _ ident -> do
-        let varName = name ident
-        let varType = keywordToType type_
-        modify $ \s -> s { compilerVariables = Map.insert varName varType (compilerVariables s)}
-        let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
-      Latte.Abs.Init _ ident expr -> do
-        let varName = name ident
-        let varType = keywordToType type_
-        modify $ \s -> s { compilerVariables = Map.insert varName varType (compilerVariables s)}
-        let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
-        e <- compilerExpr expr
-        exprWithType <- combineTypeAndIndentOfExpr expr e
-        let varAssignment = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
-    Latte.Abs.Ass p ident expr -> do
-      s <- get
-      let varName = name ident
-      case Map.lookup varName (compilerVariables s) of
-        Just varType -> do
+  compile stmt = do
+    returnFlag <- gets returnReached
+    if returnFlag
+      then return ()
+      else case stmt of
+      Latte.Abs.Empty _ -> return ()
+      Latte.Abs.BStmt _ block -> do
+        modify $ \s -> s { returnReached = False }
+        compile block
+      Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
+        Latte.Abs.NoInit _ ident -> do
+          let varName = name ident
+          let varType = keywordToType type_
+          modify $ \s -> s { compilerVariables = Map.insert varName varType (compilerVariables s)}
+          let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
+        Latte.Abs.Init _ ident expr -> do
+          let varName = name ident
+          let varType = keywordToType type_
+          modify $ \s -> s { compilerVariables = Map.insert varName varType (compilerVariables s)}
+          let varDeclaration = "%" ++ varName ++ " = alloca " ++ typeToLlvmKeyword varType
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
           e <- compilerExpr expr
           exprWithType <- combineTypeAndIndentOfExpr expr e
-          if Map.member varName (arguments s) then do
-            counter <- getNextIndirectVariableAndUpdate
-            let allocaInstr = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
-            let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
-            modify $ \s -> s {
-              compilerOutput = compilerOutput s ++ [allocaInstr, storeInstr]
-            }
-          else do
-            let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
-            modify $ \s -> s {
-              compilerOutput = compilerOutput s ++ [storeInstr]
-            }
-        Nothing -> throwError $ "Variable not defined: " ++ varName
-    Latte.Abs.Cond p expr stmt -> do
-      e <- compilerExpr expr
-      counter <- getNextLabelCounterAndUpdate
-      let trueLabel = "if_true_" ++ show counter
-      let endLabel = "if_end_" ++ show counter
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
-      compile stmt
-      let br_instruction = "br label %" ++ endLabel
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [br_instruction, endLabel ++ ":"] } --TODO sprawdzić na students czy też potrzeba br
-    Latte.Abs.CondElse p expr stmt1 stmt2 -> do
-      e <- compilerExpr expr
-      counter <- getNextLabelCounterAndUpdate
-      let trueLabel = "if_true_" ++ show counter
-      let falseLabel = "if_false_" ++ show counter
-      let endLabel = "if_end_" ++ show counter
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
-      compile stmt1
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
-      compile stmt2
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-    Latte.Abs.While p expr stmt -> do
-      counter <- getNextLabelCounterAndUpdate
-      let condLabel = "while_cond_" ++ show counter
-      let bodyLabel = "while_body_" ++ show counter
-      let endLabel = "while_end_" ++ show counter
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
-      e <- compilerExpr expr
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
-      compile stmt
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-    Latte.Abs.Incr p ident -> do
-      commonDecrIncrOperation ident "add"
-    Latte.Abs.Decr p ident -> do
-      commonDecrIncrOperation ident "sub"
-    Latte.Abs.Ret p expr -> do
-      e <- compilerExpr expr
-      exprWithType <- combineTypeAndIndentOfExpr expr e
-      let returnText = "ret" ++ " " ++ exprWithType
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText] }
-    Latte.Abs.VRet p -> 
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
-    Latte.Abs.SExp _ expr -> do --TODO
-      e  <- compilerExpr expr
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }
-    -- other -> throwError $ "Not implemented: " ++ show other
+          let varAssignment = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
+      Latte.Abs.Ass p ident expr -> do
+        s <- get
+        let varName = name ident
+        case Map.lookup varName (compilerVariables s) of
+          Just varType -> do
+            e <- compilerExpr expr
+            exprWithType <- combineTypeAndIndentOfExpr expr e
+            if Map.member varName (arguments s) then do
+              counter <- getNextIndirectVariableAndUpdate
+              let allocaInstr = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
+              let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
+              modify $ \s -> s {
+                compilerOutput = compilerOutput s ++ [allocaInstr, storeInstr]
+              }
+            else do
+              let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ varName
+              modify $ \s -> s {
+                compilerOutput = compilerOutput s ++ [storeInstr]
+              }
+          Nothing -> throwError $ "Variable not defined: " ++ varName
+      Latte.Abs.Cond p expr stmt -> do
+        e <- compilerExpr expr
+        counter <- getNextLabelCounterAndUpdate
+        let trueLabel = "if_true_" ++ show counter
+        let endLabel = "if_end_" ++ show counter
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+        originalReturnFlag <- gets returnReached
+        compile stmt
+        returnFlag <- gets returnReached
+        unless returnFlag $ do
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+        modify $ \s -> s { returnReached = originalReturnFlag }
+    
+      Latte.Abs.CondElse p expr stmt1 stmt2 -> do
+        e <- compilerExpr expr
+        counter <- getNextLabelCounterAndUpdate
+        let trueLabel = "if_true_" ++ show counter
+        let falseLabel = "if_false_" ++ show counter
+        let endLabel = "if_end_" ++ show counter
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+        originalReturnFlag <- gets returnReached
+        compile stmt1
+        --if return reached then we don't need to add br instruction
+        returnFlag <- gets returnReached
+        unless returnFlag $ do
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
+        modify $ \s -> s { returnReached = originalReturnFlag }
+        compile stmt2
+        returnFlag <- gets returnReached
+        unless returnFlag $ do
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+        modify $ \s -> s { returnReached = originalReturnFlag }
+        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
+        -- compile stmt2
+        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+      Latte.Abs.While p expr stmt -> do
+        counter <- getNextLabelCounterAndUpdate
+        let condLabel = "while_cond_" ++ show counter
+        let bodyLabel = "while_body_" ++ show counter
+        let endLabel = "while_end_" ++ show counter
+        originalReturnFlag <- gets returnReached
+        modify $ \s -> s { returnReached = False }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
+        e <- compilerExpr expr
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
+        compile stmt
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+        modify $ \s -> s { returnReached = originalReturnFlag }
+      Latte.Abs.Incr p ident -> do
+        commonDecrIncrOperation ident "add"
+      Latte.Abs.Decr p ident -> do
+        commonDecrIncrOperation ident "sub"
+      Latte.Abs.Ret p expr -> do
+        e <- compilerExpr expr
+        exprWithType <- combineTypeAndIndentOfExpr expr e
+        let returnText = "ret" ++ " " ++ exprWithType
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText],
+                          returnReached = True }
+      Latte.Abs.VRet p -> do
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
+                          returnReached = True }
+      Latte.Abs.SExp _ expr -> do --TODO
+        e  <- compilerExpr expr
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }
+      -- other -> throwError $ "Not implemented: " ++ show other
 
 commonDecrIncrOperation ident op = do
   s <- get
@@ -364,5 +397,26 @@ commonDecrIncrOperation ident op = do
 
 
 runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type -> Either String CompilerState
-runCompiler program functionsSignatures exprTypes = execStateT (compile program) $ CompilerState ["declare i32 @printString(i8* %str)", "declare i32 @printInt(i32 %i)"] 
-    Map.empty 0 0 functionsSignatures exprTypes Map.empty Map.empty Map.empty
+runCompiler program functionsSignatures exprTypes = execStateT (compile program) initialState
+  where
+    initialState = CompilerState {
+      compilerOutput = predefFunctions,
+      compilerVariables = Map.empty,
+      indirectVariablesCounter = 0,
+      labelCounter = 0,
+      functionsSignatures = functionsSignatures,
+      exprTypes = exprTypes,
+      functionToDeclare = Map.empty,
+      arguments = Map.empty,
+      stringPool = Map.empty,
+      returnReached = False
+    }
+
+    predefFunctions = 
+      [ 
+        "declare void @printString(i8* %str)",
+        "declare void @printInt(i32 %i)",
+        "declare void @error()",
+        "declare i32 @readInt()",
+        "declare i8* @readString()"
+      ]

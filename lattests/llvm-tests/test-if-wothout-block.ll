@@ -6,12 +6,16 @@ declare i8* @readString()
 define i32 @main() {
     %a = alloca i32
     store i32 1, i32* %a
-    %b = alloca i32
-    store i32 2, i32* %b
-    %c = alloca i32
     %1 = load i32, i32* %a
-    %2 = load i32, i32* %b
-    %3 = add i32 %1, %2
-    store i32 %3, i32* %c
+    %2 = icmp slt i32 %1, 1
+    br i1 %2, label %if_true_1, label %if_false_1
+if_true_1:
+    ret i32 1
+
+if_false_1:
+    store i32 3, i32* %a
+    br label %if_end_1
+
+if_end_1:
     ret i32 0
 }
