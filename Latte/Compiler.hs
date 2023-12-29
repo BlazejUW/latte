@@ -313,7 +313,19 @@ instance Compile Latte.Abs.Stmt where
       compile stmt2
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-    -- Latte.Abs.While p expr stmt ->     ""
+    Latte.Abs.While p expr stmt -> do
+      counter <- getNextLabelCounterAndUpdate
+      let condLabel = "while_cond_" ++ show counter
+      let bodyLabel = "while_body_" ++ show counter
+      let endLabel = "while_end_" ++ show counter
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
+      e <- compilerExpr expr
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
+      compile stmt
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
     Latte.Abs.Incr p ident -> do
       commonDecrIncrOperation ident "add"
     Latte.Abs.Decr p ident -> do
@@ -328,7 +340,7 @@ instance Compile Latte.Abs.Stmt where
     Latte.Abs.SExp _ expr -> do --TODO
       e  <- compilerExpr expr
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }
-    other -> throwError $ "Not implemented: " ++ show other
+    -- other -> throwError $ "Not implemented: " ++ show other
 
 commonDecrIncrOperation ident op = do
   s <- get
