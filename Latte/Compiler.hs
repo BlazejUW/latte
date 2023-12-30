@@ -309,6 +309,10 @@ instance Compile Latte.Abs.TopDef where
     }
     variablesCounter <- gets variablesCounter
     compile block
+    returnFlag <- gets returnReached
+    --if there is no return statement in function and type is void, add return void
+    when (not returnFlag && retType == Void) $ do
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"] }
     popFrame
 
@@ -344,11 +348,11 @@ instance Compile Latte.Abs.Stmt where
         Latte.Abs.Init _ ident expr -> do
           let varName = name ident
           let varType = keywordToType type_
+          e <- compilerExpr expr
           counter <- getNextVariableAndUpdate
           addVariableToFrame varName varType (show counter)
           let varDeclaration = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
-          e <- compilerExpr expr
           exprWithType <- combineTypeAndIndentOfExpr expr e
           let varAssignment = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
