@@ -37,7 +37,7 @@ echo "--- SHOULD NOT FAIL: ---"
 # Run all tests from good/ directory
 for file in ./lattests/good/*.lat; do
     echo -n "Running test $file... "
-    ./Latte/RunCompile $file | llvm-link - -S ./runtime/predefinedFunctions.ll | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
+    ./Latte/RunCompile $file | llvm-link - -S ./runtime/runtime.ll | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
 done
 
 

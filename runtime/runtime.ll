@@ -2,26 +2,16 @@
 @loadStrInt = private unnamed_addr constant [3 x i8] c"%d\00", align 1
 @errorMsg = private unnamed_addr constant [15 x i8] c"runtime error\0A\00", align 1
 @newline = private unnamed_addr constant [2 x i8] c"\0A\00"
-; @buffer = common global [256 x i8] zeroinitializer, align 1
+@__stdinp = external global ptr, align 8
 declare i32 @scanf(i8*, ...)
 declare i32 @printf(i8*, ...)
 declare void @exit(i32)
 declare void @llvm.memcpy.p0i8.p0i8.i64(i8*, i8*, i64, i1)
-
+declare ptr @malloc(i64 noundef)
+declare ptr @fgets(ptr noundef, i32 noundef, ptr noundef)
+declare void @free(ptr noundef) 
 declare i64 @strlen(i8*)
-declare i8* @malloc(i32)
-declare i8* @strcpy(i8*, i8*)
 
-
-; declare i8* @fgets(i8*, i32, i8*)
-; declare i8* @llvm.get.stdin() ; External function to get stdin
-
-; define i8* @readString() {
-;   %buffer_ptr = getelementptr inbounds [256 x i8], [256 x i8]* @buffer, i32 0, i32 0
-;   %stdin = call i8* @llvm.get.stdin()
-;   call i8* @fgets(i8* %buffer_ptr, i32 256, i8* %stdin)
-;   ret i8* %buffer_ptr
-; }
 
 define void @printInt(i32 %x) {
   call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([4 x i8], [4 x i8]* @strInt, i64 0, i64 0), i32 %x)
@@ -49,17 +39,40 @@ define void @error() {
     ret void
 }
 
-; define i8* @concatStrings(i8* %str1, i8* %str2) {
-;     %len1 = call i32 @strlen(i8* %str1)
-;     %len2 = call i32 @strlen(i8* %str2)
+define ptr @readString() #0 {
+  %1 = alloca ptr, align 8
+  %2 = alloca i64, align 8
+  %3 = alloca ptr, align 8
+  store i64 256, ptr %2, align 8
+  %4 = load i64, ptr %2, align 8
+  %5 = call ptr @malloc(i64 noundef %4) #3
+  store ptr %5, ptr %3, align 8
+  %6 = load ptr, ptr %3, align 8
+  %7 = load i64, ptr %2, align 8
+  %8 = trunc i64 %7 to i32
+  %9 = load ptr, ptr @__stdinp, align 8
+  %10 = call ptr @fgets(ptr noundef %6, i32 noundef %8, ptr noundef %9)
+  %11 = icmp eq ptr %10, null
+  br i1 %11, label %12, label %14
 
-;     %newLen = add i32 %len1, %len2
-;     %newStr = call i8* @malloc(i32 %newLen)
-;     call void @strcpy(i8* %newStr, i8* %str1)
-;     %newStrEnd = getelementptr i8, i8* %newStr, i32 %len1
-;     call void @strcpy(i8* %newStrEnd, i8* %str2)
-;     ret i8* %newStr
-; }
+12:
+  %13 = load ptr, ptr %3, align 8
+  call void @free(ptr noundef %13)
+  store ptr null, ptr %1, align 8
+  br label %16
+
+14:
+  %15 = load ptr, ptr %3, align 8
+  store ptr %15, ptr %1, align 8
+  br label %16
+
+16:
+  %17 = load ptr, ptr %1, align 8
+  ret ptr %17
+}
+
+
+
 define i8* @doNotUseThatNameConcat(i8* %str1, i8* %str2) {
     %str1_len = call i64 @strlen(i8* %str1)
     %str2_len = call i64 @strlen(i8* %str2)
