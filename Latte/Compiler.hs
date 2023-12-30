@@ -424,6 +424,21 @@ instance Compile Latte.Abs.Stmt where
       Latte.Abs.While p expr stmt -> do
         case expr of
           Latte.Abs.ELitFalse _ -> return ()
+          Latte.Abs.ELitTrue _ -> do
+            counter <- getNextLabelCounterAndUpdate
+            let condLabel = "while_cond_" ++ show counter
+            let bodyLabel = "while_body_" ++ show counter
+            let endLabel = "while_end_" ++ show counter
+            originalReturnFlag <- gets returnReached
+            modify $ \s -> s { returnReached = False }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
+            e <- compilerExpr expr
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ bodyLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
+            compile stmt
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+            modify $ \s -> s { returnReached = originalReturnFlag }
           _ -> do
             counter <- getNextLabelCounterAndUpdate
             let condLabel = "while_cond_" ++ show counter
