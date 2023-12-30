@@ -378,57 +378,68 @@ instance Compile Latte.Abs.Stmt where
           Nothing -> throwError $ "Variable not defined: " ++ varName
       Latte.Abs.Cond p expr stmt -> do
         e <- compilerExpr expr
-        counter <- getNextLabelCounterAndUpdate
-        let trueLabel = "if_true_" ++ show counter
-        let endLabel = "if_end_" ++ show counter
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
-        originalReturnFlag <- gets returnReached
-        modify $ \s -> s { returnReached = False }
-        compile stmt
-        returnFlag <- gets returnReached
-        unless returnFlag $ do
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-        modify $ \s -> s { returnReached = originalReturnFlag}
+        case expr of
+          Latte.Abs.ELitTrue _ -> compile stmt
+          Latte.Abs.ELitFalse _ -> return ()
+          _ -> do
+            counter <- getNextLabelCounterAndUpdate
+            let trueLabel = "if_true_" ++ show counter
+            let endLabel = "if_end_" ++ show counter
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+            originalReturnFlag <- gets returnReached
+            modify $ \s -> s { returnReached = False }
+            compile stmt
+            returnFlag <- gets returnReached
+            unless returnFlag $ do
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+            modify $ \s -> s { returnReached = originalReturnFlag}
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
-        counter <- getNextLabelCounterAndUpdate
-        let trueLabel = "if_true_" ++ show counter
-        let falseLabel = "if_false_" ++ show counter
-        let endLabel = "if_end_" ++ show counter
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
-        originalReturnFlag <- gets returnReached
-        modify $ \s -> s { returnReached = False }
-        compile stmt1
-        returnFlag1 <- gets returnReached
-        unless returnFlag1 $ do
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
-        modify $ \s -> s { returnReached = False }
-        compile stmt2
-        returnFlag2 <- gets returnReached
-        unless (returnFlag1 && returnFlag2) $ do
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-          modify $ \s -> s { returnReached = originalReturnFlag}
+        case expr of
+          Latte.Abs.ELitTrue _ -> compile stmt1
+          Latte.Abs.ELitFalse _ -> compile stmt2
+          _ -> do
+            counter <- getNextLabelCounterAndUpdate
+            let trueLabel = "if_true_" ++ show counter
+            let falseLabel = "if_false_" ++ show counter
+            let endLabel = "if_end_" ++ show counter
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+            originalReturnFlag <- gets returnReached
+            modify $ \s -> s { returnReached = False }
+            compile stmt1
+            returnFlag1 <- gets returnReached
+            unless returnFlag1 $ do
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
+            modify $ \s -> s { returnReached = False }
+            compile stmt2
+            returnFlag2 <- gets returnReached
+            unless (returnFlag1 && returnFlag2) $ do
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+              modify $ \s -> s { returnReached = originalReturnFlag}
       Latte.Abs.While p expr stmt -> do
-        counter <- getNextLabelCounterAndUpdate
-        let condLabel = "while_cond_" ++ show counter
-        let bodyLabel = "while_body_" ++ show counter
-        let endLabel = "while_end_" ++ show counter
-        originalReturnFlag <- gets returnReached
-        modify $ \s -> s { returnReached = False }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
-        e <- compilerExpr expr
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
-        compile stmt
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-        modify $ \s -> s { returnReached = originalReturnFlag }
+        case expr of
+          Latte.Abs.ELitFalse _ -> return ()
+          _ -> do
+            counter <- getNextLabelCounterAndUpdate
+            let condLabel = "while_cond_" ++ show counter
+            let bodyLabel = "while_body_" ++ show counter
+            let endLabel = "while_end_" ++ show counter
+            originalReturnFlag <- gets returnReached
+            modify $ \s -> s { returnReached = False }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
+            e <- compilerExpr expr
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
+            compile stmt
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+            modify $ \s -> s { returnReached = originalReturnFlag }
       Latte.Abs.Incr p ident -> do
         commonDecrIncrOperation ident "add"
       Latte.Abs.Decr p ident -> do
