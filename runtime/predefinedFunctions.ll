@@ -60,31 +60,16 @@ define void @error() {
 ;     call void @strcpy(i8* %newStrEnd, i8* %str2)
 ;     ret i8* %newStr
 ; }
-define i8* @concat(i8* %str1, i8* %str2) {
-    ; Oblicz długość str1
+define i8* @doNotUseThatNameConcat(i8* %str1, i8* %str2) {
     %str1_len = call i64 @strlen(i8* %str1)
-
-    ; Oblicz długość str2
     %str2_len = call i64 @strlen(i8* %str2)
-
-    ; Oblicz łączną długość (dodaj 1 na null terminator)
     %total_len = add i64 %str1_len, %str2_len
     %total_len_inc_null = add i64 %total_len, 1
-
-    ; Alokuj pamięć na nowy łańcuch
     %new_str = call i8* @malloc(i64 %total_len_inc_null)
-
-    ; Skopiuj str1 do nowej pamięci
     call void @llvm.memcpy.p0i8.p0i8.i64(i8* %new_str, i8* %str1, i64 %str1_len, i1 false)
-
-    ; Skopiuj str2 do nowej pamięci (za str1)
     %str2_dest = getelementptr i8, i8* %new_str, i64 %str1_len
     call void @llvm.memcpy.p0i8.p0i8.i64(i8* %str2_dest, i8* %str2, i64 %str2_len, i1 false)
-
-    ; Dodaj null terminator
     %end_str = getelementptr i8, i8* %new_str, i64 %total_len
     store i8 0, i8* %end_str
-
-    ; Zwróć nowy łańcuch
     ret i8* %new_str
 }

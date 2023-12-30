@@ -79,11 +79,10 @@ instance CompileExpr Latte.Abs.Expr where
       lType <- getExpressionType l
       case lType of
         String -> do
-          let call = "%" ++ show counter ++ " = call i8* @concat(i8* " ++ l' ++ ", i8* " ++ r' ++ ")"
-          --add concat declare to head of compilerOutput if is not there
+          let call = "%" ++ show counter ++ " = call i8* @doNotUseThatNameConcat(i8* " ++ l' ++ ", i8* " ++ r' ++ ")"
           concatWasDeclared <- gets concatWasDeclared
           unless concatWasDeclared $ do
-            modify $ \s -> s { compilerOutput = "declare i8* @concat(i8*, i8*)" : compilerOutput s }
+            modify $ \s -> s { compilerOutput = "declare i8* @doNotUseThatNameConcat(i8*, i8*)" : compilerOutput s }
             modify $ \s -> s { concatWasDeclared = True }
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
           return $ "%" ++ show counter
@@ -108,19 +107,41 @@ instance CompileExpr Latte.Abs.Expr where
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [negInstr] }
       return $ "%" ++ show counter
     Latte.Abs.EAnd p l r -> do
+      indirectVar <- getNextIndirectVariableAndUpdate
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show indirectVar ++ " = alloca i1"] }
       lExpr <- compilerExpr l
+      labelCounter <- getNextLabelCounterAndUpdate
+      let trueLabel = "and_true_" ++ show labelCounter
+      let falseLabel = "and_false_" ++ show labelCounter
+      let endLabel = "and_end_" ++ show labelCounter
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ lExpr ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
       rExpr <- compilerExpr r
-      counter <- getNextIndirectVariableAndUpdate
-      let andInstr = "%" ++ show counter ++ " = and i1 " ++ lExpr ++ ", " ++ rExpr
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [andInstr] }
-      return $ "%" ++ show counter
+      let resultAssign = "store i1 " ++ rExpr ++ ", i1* %" ++ show indirectVar
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [resultAssign,"br label %" ++ endLabel, falseLabel ++ ":"] }
+      let resultAssign = "store i1 0, i1* %" ++ show indirectVar
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [resultAssign, "br label %" ++ endLabel, endLabel ++ ":"] }
+      resultVar <- getNextIndirectVariableAndUpdate
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = load i1, i1* %" ++ show indirectVar] }
+      return $ "%" ++ show resultVar
     Latte.Abs.EOr p l r -> do
+      indirectVar <- getNextIndirectVariableAndUpdate
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show indirectVar ++ " = alloca i1"] }
       lExpr <- compilerExpr l
+      labelCounter <- getNextLabelCounterAndUpdate
+      let falseLabel = "or_false_" ++ show labelCounter
+      let trueLabel = "or_true_" ++ show labelCounter
+      let endLabel = "or_end_" ++ show labelCounter
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ lExpr ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+      let interTrue = "store i1 1, i1* %" ++ show indirectVar
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [interTrue, "br label %" ++ endLabel, falseLabel ++ ":"] }
       rExpr <- compilerExpr r
-      counter <- getNextIndirectVariableAndUpdate
-      let orInstr = "%" ++ show counter ++ " = or i1 " ++ lExpr ++ ", " ++ rExpr
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [orInstr] }
-      return $ "%" ++ show counter
+      let interFalse = "store i1 " ++ rExpr ++ ", i1* %" ++ show indirectVar
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [interFalse, "br label %" ++ endLabel, endLabel ++ ":"] }
+      resultVar <- getNextIndirectVariableAndUpdate
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = load i1, i1* %" ++ show indirectVar] }
+      return $ "%" ++ show resultVar
     Latte.Abs.Not p expr -> do
       e <- compilerExpr expr
       counter <- getNextIndirectVariableAndUpdate
