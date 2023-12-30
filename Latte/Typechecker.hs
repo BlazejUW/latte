@@ -23,7 +23,8 @@ data TypecheckerState = TypecheckerState
     variablesStack :: [Map Latte.Abs.Ident Type],
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool,
-    exprTypes :: Map Latte.Abs.Expr Type
+    exprTypes :: Map Latte.Abs.Expr Type,
+    arguments :: Map Latte.Abs.Ident Type
   }
   deriving (Eq, Ord, Show)
 
@@ -166,7 +167,9 @@ instance Typecheck Latte.Abs.TopDef where
     let returnType = keywordToType t
     modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
     pushFrame
-    forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> addVariableToFrame ident (keywordToType type_)
+    forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> do
+      addVariableToFrame ident (keywordToType type_)
+      modify $ \s -> s {arguments = insert ident (keywordToType type_) (arguments s)}
     modify $ \s -> s {expectedReturnType = Just $ keywordToType t, returnReachable = False}
     typecheck block
     expectedRetType <- gets expectedReturnType
@@ -176,6 +179,7 @@ instance Typecheck Latte.Abs.TopDef where
         returnReached <- gets returnReachable
         unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
     popFrame
+    modify $ \s -> s {arguments = Map.empty}
     modify $ \s -> s {expectedReturnType = Nothing}
 
 
@@ -187,7 +191,10 @@ instance Typecheck Latte.Abs.Stmt where
   typecheck = \case
     Latte.Abs.Empty _ -> return ()
     Latte.Abs.BStmt _ block -> do
+      s <- get
       pushFrame
+      forM_ (Map.toList $ arguments s) $ \(ident, type_) -> do
+        addVariableToFrame ident type_
       typecheck block
       popFrame
     Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
@@ -316,6 +323,7 @@ runTypechecker program = execStateT (typecheck program) initialState
       , expectedReturnType = Nothing
       , returnReachable = False
       , exprTypes = Map.empty
+      , arguments = Map.empty
       }
 
     predefFunctions = Map.fromList
