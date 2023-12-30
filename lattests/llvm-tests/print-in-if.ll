@@ -4,15 +4,15 @@ declare void @error()
 declare i32 @readInt()
 declare i8* @readString()
 define i32 @main() {
-    %i = alloca i32
-    store i32 0, i32* %i
+    %1 = alloca i32
+    store i32 0, i32* %1
     br i1 1, label %if_true_1, label %if_end_1
 if_true_1:
-    %1 = load i32, i32* %i
-    %2 = add i32 %1, 1
-    store i32 %2, i32* %i
-    %3 = load i32, i32* %i
-    call void @printInt(i32 %3)
+    %2 = load i32, i32* %1
+    %3 = add i32 %2, 1
+    store i32 %3, i32* %1
+    %4 = load i32, i32* %1
+    call void @printInt(i32 %4)
     br label %if_end_1
 if_end_1:
     ret i32 0

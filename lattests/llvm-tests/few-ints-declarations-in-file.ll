@@ -4,12 +4,12 @@ declare void @error()
 declare i32 @readInt()
 declare i8* @readString()
 define i32 @main() {
-    %a = alloca i32
-    store i32 1, i32* %a
-    %b = alloca i32
-    %c = alloca i32
-    store i32 3, i32* %c
-    %d = alloca i32
-    store i32 4, i32* %d
+    %1 = alloca i32
+    store i32 1, i32* %1
+    %2 = alloca i32
+    %3 = alloca i32
+    store i32 3, i32* %3
+    %4 = alloca i32
+    store i32 4, i32* %4
     ret i32 0
 }
