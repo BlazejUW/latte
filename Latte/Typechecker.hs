@@ -18,9 +18,9 @@ import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functi
 import Data.Void (Void)
 
 data TypecheckerState = TypecheckerState
-  { 
-    functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type, 
-    variables :: Map Latte.Abs.Ident Type,
+  {
+    functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
+    variablesStack :: [Map Latte.Abs.Ident Type],
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool,
     exprTypes :: Map Latte.Abs.Expr Type
@@ -33,6 +33,34 @@ checkTypes ident p l r = unless (l == r) $ throwError $ "Type mismatch for " ++
                  ident ++ " - left (" ++ typeToKeyword l ++ ") and right (" ++
                  typeToKeyword r ++ ") do not match at " ++ errLocation p
 
+pushFrame :: LTS ()
+pushFrame = modify $ \s -> s {variablesStack = Map.empty : variablesStack s}
+
+popFrame :: LTS ()
+popFrame = modify $ \s -> s {
+  variablesStack = case variablesStack s of
+      (_:rest) -> rest 
+      [] -> []
+  }
+
+
+addVariableToFrame :: Latte.Abs.Ident -> Type -> LTS ()
+addVariableToFrame ident t = modify $ \s ->
+  let (currentFrame:rest) = variablesStack s
+  in s { variablesStack = insert ident t currentFrame : rest }
+
+lookupVariable :: Latte.Abs.Ident -> LTS (Maybe Type)
+lookupVariable ident = gets $ \s -> 
+  let search [] = Nothing
+      search (frame:rest) = case Map.lookup ident frame of
+        Nothing -> search rest
+        justType -> justType
+  in search (variablesStack s)
+
+lookupVariableInCurrentFrame :: Latte.Abs.Ident -> LTS (Maybe Type)
+lookupVariableInCurrentFrame ident = gets $ \s -> 
+  let (currentFrame:rest) = variablesStack s
+  in Map.lookup ident currentFrame
 
 class TypecheckExpr a where
   typecheckExpr :: a -> LTS Type
@@ -98,7 +126,7 @@ instance TypecheckExpr Latte.Abs.Expr where
       return Boolean
     Latte.Abs.EVar p ident -> do
       s <- get
-      let localVar = Map.lookup ident (variables s)
+      localVar <- lookupVariable ident
       case localVar of
         Just type_ -> do
           modify $ \s -> s {exprTypes = Map.insert node type_ (exprTypes s)}
@@ -137,10 +165,9 @@ instance Typecheck Latte.Abs.TopDef where
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     let returnType = keywordToType t
     modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
-    -- typecheck block, but first add arguments as variables, and check if return type matches
-    modify $ \s -> s {variables = Map.fromList $ map (\(Latte.Abs.Arg _ type_ ident) -> (ident, keywordToType type_)) args}
-    modify $ \s -> s {expectedReturnType = Just $ keywordToType t}
-    modify $ \s -> s {returnReachable = False}
+    pushFrame
+    forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> addVariableToFrame ident (keywordToType type_)
+    modify $ \s -> s {expectedReturnType = Just $ keywordToType t, returnReachable = False}
     typecheck block
     expectedRetType <- gets expectedReturnType
     case expectedRetType of
@@ -148,38 +175,36 @@ instance Typecheck Latte.Abs.TopDef where
       _ -> do
         returnReached <- gets returnReachable
         unless returnReached $ throwError $ "Return statement not reachable in function " ++ name ident
+    popFrame
     modify $ \s -> s {expectedReturnType = Nothing}
 
 
 instance Typecheck Latte.Abs.Block where
   typecheck (Latte.Abs.Block p stmts) = do
-    originalState <- get
     forM_ stmts typecheck
-    returnReached <- gets returnReachable
-    currentState <- get
-    put $ originalState { exprTypes = exprTypes currentState }
-    modify $ \s -> s {returnReachable = returnReached}
 
 instance Typecheck Latte.Abs.Stmt where
   typecheck = \case
     Latte.Abs.Empty _ -> return ()
-    Latte.Abs.BStmt _ block -> typecheck block
+    Latte.Abs.BStmt _ block -> do
+      pushFrame
+      typecheck block
+      popFrame
     Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
       Latte.Abs.NoInit _ ident -> do
-        --check if ident is present in declared variables
-        variables_used <- gets variables
-        when (Map.member ident variables_used) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p
-        modify $ \s -> s {variables = insert ident (keywordToType type_) (variables s)}
+        localVar <- lookupVariableInCurrentFrame ident
+        when (isJust localVar) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p
+        addVariableToFrame ident (keywordToType type_)
       Latte.Abs.Init _ ident expr -> do
         t <- typecheckExpr expr
         checkTypes "declaration" p (keywordToType type_) t
-        modify $ \s -> s {variables = insert ident (keywordToType type_) (variables s)}
+        localVar <- lookupVariableInCurrentFrame ident
+        when (isJust localVar) $ throwError $ "Variable " ++ name ident ++ " already defined " ++ errLocation p
+        addVariableToFrame ident (keywordToType type_)
     Latte.Abs.Ass p ident expr -> do
-      s <- get
       t <- typecheckExpr expr
-      let localVar = Map.lookup ident (variables s)
-      let varInfo = localVar
-      case varInfo of
+      localVar <- lookupVariable ident
+      case localVar of
         Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
         Just type_ -> checkTypes "assignment" p type_ t
     Latte.Abs.Cond p expr stmt -> do
@@ -274,7 +299,7 @@ instance Typecheck Latte.Abs.Stmt where
 -- common typecheck for Decr. and Incr.
 typecheckDecrIncr p ident = do
   s <- get
-  let localVar = Map.lookup ident (variables s)
+  localVar <- lookupVariable ident
   case localVar of
     Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
     Just type_ -> do
@@ -287,7 +312,7 @@ runTypechecker program = execStateT (typecheck program) initialState
   where
     initialState = TypecheckerState
       { functionsSignatures = predefFunctions
-      , variables = Map.empty
+      , variablesStack = [Map.empty]
       , expectedReturnType = Nothing
       , returnReachable = False
       , exprTypes = Map.empty
