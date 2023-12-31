@@ -9,7 +9,7 @@ int main(){
                 else{
                     a = 7;
                     int b = 3;
-                    a = b*a*a;
+                    a = power_to(a,b);
                     printInt(a);
                 }
             }

@@ -469,7 +469,7 @@ instance Compile Latte.Abs.Stmt where
         modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
                           returnReached = True }
       Latte.Abs.SExp _ expr -> do
-        e  <- compilerExpr expr
+        compilerExpr expr
         return ()
       -- other -> throwError $ "Not implemented: " ++ show other
 
