@@ -470,7 +470,7 @@ instance Compile Latte.Abs.Stmt where
                           returnReached = True }
       Latte.Abs.SExp _ expr -> do
         e  <- compilerExpr expr
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [e] }
+        return ()
       -- other -> throwError $ "Not implemented: " ++ show other
 
 commonDecrIncrOperation ident op = do
