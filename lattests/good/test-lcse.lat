@@ -1,0 +1,13 @@
+int main(){
+    int a = 1;
+    int b = a+1;
+    int c = a+1;
+    boolean e = isTheSame(b,c);
+    boolean f = isTheSame(b,c);
+    return 0;
+
+}
+
+boolean isTheSame(int a, int b){
+    return a==b;
+}
