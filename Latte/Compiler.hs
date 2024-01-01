@@ -196,15 +196,11 @@ isEqual expr1 expr2 = case (expr1, expr2) of
 lookupExprsFrame :: Latte.Abs.Expr -> LCS (Maybe String)
 lookupExprsFrame expr = do
   frames <- gets computedExprsStack
-  searchAllExprsFrames frames expr
-  where
-    searchAllExprsFrames :: [[(Latte.Abs.Expr, String)]] -> Latte.Abs.Expr -> LCS (Maybe String)
-    searchAllExprsFrames [] _ = return Nothing
-    searchAllExprsFrames (frame:rest) expr = do
-      result <- searchExprsFrame frame expr
-      case result of
-        Just reg -> return $ Just reg
-        Nothing -> searchAllExprsFrames rest expr
+  topFrame <- case frames of
+    (topFrame:_) -> return topFrame
+    _ -> return []
+  searchExprsFrame topFrame expr
+
 
 searchExprsFrame :: [(Latte.Abs.Expr, String)]-> Latte.Abs.Expr  -> LCS (Maybe String)
 searchExprsFrame [] _ = return Nothing
@@ -222,7 +218,6 @@ removeExprsWithVarFromAllFrames varName = do
   modify $ \s -> s { computedExprsStack = newFrames }
 
 removeExprsWithVarFromOneFrame :: String -> [(Latte.Abs.Expr, String)] -> LCS [(Latte.Abs.Expr, String)]
---search along the frame and remove all expressions with given variable using function containsVar
 removeExprsWithVarFromOneFrame varName frame = return $ filter (not . containsVar varName) frame
 
 containsVar :: String -> (Latte.Abs.Expr, String) -> Bool
@@ -248,7 +243,7 @@ updateVarRegisterInTopFrame varName newReg = do
     (topFrame:restFrames) -> do
       newTopFrame <- mapM (updateVarRegister varName newReg) topFrame
       modify $ \s -> s { computedExprsStack = newTopFrame : restFrames }
-    _ -> return ()  -- Brak ramek na stosie, nic nie rób
+    _ -> return () 
 
 updateVarRegister :: String -> String -> (Latte.Abs.Expr, String) -> LCS (Latte.Abs.Expr, String)
 updateVarRegister varName newReg (expr, reg) = do
@@ -562,10 +557,12 @@ instance Compile Latte.Abs.Stmt where
       else case stmt of
       Latte.Abs.Empty _ -> return ()
       Latte.Abs.BStmt _ block -> do
+        pushExprsFrame
         pushVariablesFrame
         modify $ \s -> s { returnReached = False }
         compile block
         popVariablesFrame
+        popExprsFrame
       Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
         Latte.Abs.NoInit _ ident -> do
           let varName = name ident
@@ -584,6 +581,7 @@ instance Compile Latte.Abs.Stmt where
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
           exprWithType <- combineTypeAndIndentOfExpr expr e
           let varAssignment = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
+          removeExprsWithVarFromAllFrames varName
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
       Latte.Abs.Ass p ident expr -> do
         s <- get
@@ -591,7 +589,6 @@ instance Compile Latte.Abs.Stmt where
         maybeVar <- lookupVariable varName
         case maybeVar of
           Just (varType, llvmVarName) -> do
-            removeExprsWithVarFromAllFrames varName
             e <- compilerExpr expr
             exprWithType <- combineTypeAndIndentOfExpr expr e
             if Map.member varName (arguments s) && (varName == llvmVarName) then do
@@ -661,8 +658,6 @@ instance Compile Latte.Abs.Stmt where
               modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
       Latte.Abs.While p expr stmt -> do
-        exprFrames <- gets computedExprsStack
-        modify $ \s -> s { computedExprsStack = [[]]}
         case expr of
           Latte.Abs.ELitFalse _ -> return ()
           Latte.Abs.ELitTrue _ -> do
@@ -672,12 +667,14 @@ instance Compile Latte.Abs.Stmt where
             let endLabel = "while_end_" ++ show counter
             originalReturnFlag <- gets returnReached
             modify $ \s -> s { returnReached = False }
+            pushExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
             e <- compilerExpr expr
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ bodyLabel] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
             compile stmt
+            popExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
             modify $ \s -> s { returnReached = originalReturnFlag }
           _ -> do
@@ -687,16 +684,17 @@ instance Compile Latte.Abs.Stmt where
             let endLabel = "while_end_" ++ show counter
             originalReturnFlag <- gets returnReached
             modify $ \s -> s { returnReached = False }
+            pushExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
             e <- compilerExpr expr
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
             compile stmt
+            popExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
             modify $ \s -> s { returnReached = originalReturnFlag }
-        modify $ \s -> s { computedExprsStack = exprFrames}
       Latte.Abs.Incr p ident -> do
         removeExprsWithVarFromAllFrames (name ident)
         commonDecrIncrOperation ident "add"

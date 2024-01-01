@@ -2,8 +2,11 @@ int main(){
     int a = 1;
     int b = a+1;
     int c = a+1;
+    boolean d = isTheSame(b,c);
     boolean e = isTheSame(b,c);
-    boolean f = isTheSame(b,c);
+    if(e){
+        printInt(1);
+    }
     return 0;
 
 }
