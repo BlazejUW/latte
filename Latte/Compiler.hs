@@ -163,12 +163,6 @@ isEqual expr1 expr2 = case (expr1, expr2) of
   (Latte.Abs.ELitInt _ val1, Latte.Abs.ELitInt _ val2) -> return $ val1 == val2
   (Latte.Abs.EString _ str1, Latte.Abs.EString _ str2) -> return $ str1 == str2
   (Latte.Abs.EVar _ ident1, Latte.Abs.EVar _ ident2) -> return $ name ident1 == name ident2
-  -- (Latte.Abs.EApp _ ident1 exprs1, Latte.Abs.EApp _ ident2 exprs2) -> do
-  --   if name ident1 /= name ident2  then
-  --     return False
-  --   else do
-  --     exprsEqual <- Control.Monad.zipWithM isEqual exprs1 exprs2
-  --     return $ and exprsEqual
   (Latte.Abs.EAdd _ expr11 op1 expr12, Latte.Abs.EAdd _ expr21 op2 expr22) -> do
     expr11EqExpr21 <- isEqual expr11 expr21
     expr12EqExpr22 <- isEqual expr12 expr22
@@ -236,49 +230,6 @@ containsVar varName (expr, _) = checkExpr expr
       Latte.Abs.EApp _ _ args -> any checkExpr args
       _ -> False
 
-updateVarRegisterInTopFrame :: String -> String -> LCS ()
-updateVarRegisterInTopFrame varName newReg = do
-  frames <- gets computedExprsStack
-  case frames of
-    (topFrame:restFrames) -> do
-      newTopFrame <- mapM (updateVarRegister varName newReg) topFrame
-      modify $ \s -> s { computedExprsStack = newTopFrame : restFrames }
-    _ -> return () 
-
-updateVarRegister :: String -> String -> (Latte.Abs.Expr, String) -> LCS (Latte.Abs.Expr, String)
-updateVarRegister varName newReg (expr, reg) = do
-  containsVar <- exprContainsVar varName expr
-  return (expr, if containsVar then newReg else reg)
-
-exprContainsVar :: String -> Latte.Abs.Expr -> LCS Bool
-exprContainsVar varName expr = case expr of
-  Latte.Abs.EVar _ ident -> return $ name ident == varName
-  Latte.Abs.EAdd _ expr1 _ expr2 -> do
-    contains1 <- exprContainsVar varName expr1
-    contains2 <- exprContainsVar varName expr2
-    return $ contains1 || contains2
-  Latte.Abs.EMul _ expr1 _ expr2 -> do
-    contains1 <- exprContainsVar varName expr1
-    contains2 <- exprContainsVar varName expr2
-    return $ contains1 || contains2
-  Latte.Abs.EAnd _ expr1 expr2 -> do
-    contains1 <- exprContainsVar varName expr1
-    contains2 <- exprContainsVar varName expr2
-    return $ contains1 || contains2
-  Latte.Abs.EOr _ expr1 expr2 -> do
-    contains1 <- exprContainsVar varName expr1
-    contains2 <- exprContainsVar varName expr2
-    return $ contains1 || contains2
-  Latte.Abs.Neg _ expr -> exprContainsVar varName expr
-  Latte.Abs.Not _ expr -> exprContainsVar varName expr
-  Latte.Abs.ERel _ expr1 _ expr2 -> do
-    contains1 <- exprContainsVar varName expr1
-    contains2 <- exprContainsVar varName expr2
-    return $ contains1 || contains2
-  Latte.Abs.EApp _ _ args -> do
-    contains <- mapM (exprContainsVar varName) args
-    return $ or contains
-  _ -> return False
 
 --EXPRESSIONS SECTION
 class CompileExpr a where
@@ -596,13 +547,12 @@ instance Compile Latte.Abs.Stmt where
               let allocaInstr = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
               let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
               addVariableToFrame varName varType (show counter)
-              updateVarRegisterInTopFrame varName (show counter)
+              removeExprsWithVarFromAllFrames varName
               modify $ \s -> s {
                 compilerOutput = compilerOutput s ++ [allocaInstr, storeInstr]
               }
             else do
               let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
-              -- updateVarRegisterInTopFrame varName llvmVarName
               removeExprsWithVarFromAllFrames varName
               modify $ \s -> s {compilerOutput = compilerOutput s ++ [storeInstr]}
           Nothing -> throwError $ "Variable not defined: " ++ varName
