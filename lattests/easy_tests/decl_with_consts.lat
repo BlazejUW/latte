@@ -1,0 +1,15 @@
+int main(){
+    int a = 3;
+    int c;
+    c = a + 1;
+    int d;
+    d = 5;
+    boolean b = true;
+    if(b){
+        printInt(c);
+    }
+    else{
+        printInt(2);
+    }
+    return 0;
+}

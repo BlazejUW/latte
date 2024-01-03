@@ -61,7 +61,7 @@ popVariablesFrame = modify $ \s -> s {
       [] -> []
   }
 
-addVariableToFrame :: String -> Type -> String -> LCS ()
+addVariableToFrame :: String -> Type -> String  -> LCS ()
 addVariableToFrame varName varType llvmVarName = modify $ \s ->
   let (currentFrame:rest) = variablesStack s
   in s { variablesStack = Map.insert varName (varType, llvmVarName) currentFrame : rest }
@@ -144,12 +144,15 @@ commonDecrIncrOperation ident op = do
         let opInstr = "%" ++ show opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ llvmVarName ++ ", 1"
         modify $ \s -> s { compilerOutput = compilerOutput s ++ [opInstr] }
       else do
-        loadCounter <- getNextVariableAndUpdate
-        let loadInstr = "%" ++ show loadCounter ++ " = load " ++ typeToLlvmKeyword varType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
         opCounter <- getNextVariableAndUpdate
-        let opInstr = "%" ++ show opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ show loadCounter ++ ", 1"
-        let storeInstr = "store " ++ typeToLlvmKeyword varType ++ " %" ++ show opCounter ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [loadInstr, opInstr, storeInstr] }
+        let opInstr = "%" ++ show opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ llvmVarName ++ ", 1"
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [opInstr] }
+        addVariableToFrame varName varType (show opCounter)
+        -- let loadInstr = "%" ++ show loadCounter ++ " = load " ++ typeToLlvmKeyword varType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
+        -- opCounter <- getNextVariableAndUpdate
+        -- let opInstr = "%" ++ show opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ show loadCounter ++ ", 1"
+        -- let storeInstr = "store " ++ typeToLlvmKeyword varType ++ " %" ++ show opCounter ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
+        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ [loadInstr, opInstr, storeInstr] }
     Nothing -> throwError $ "Variable not defined: " ++ varName
 
 printArg :: Latte.Abs.Arg -> String
@@ -230,6 +233,44 @@ containsVar varName (expr, _) = checkExpr expr
       Latte.Abs.EApp _ _ args -> any checkExpr args
       _ -> False
 
+fakeInitInsteadOfAlloca :: String -> Type -> [Char] -> Latte.Abs.Expr' a -> StateT CompilerState (Either CompilerError) ()
+fakeInitInsteadOfAlloca varName varType exprString expr = do
+  case expr of
+    Latte.Abs.ELitInt _ _ -> do
+      addCounter <- getNextVariableAndUpdate
+      let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, " ++ exprString
+      addVariableToFrame varName varType (show addCounter)
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+    Latte.Abs.ELitTrue _ -> do
+      addCounter <- getNextVariableAndUpdate
+      let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 1"
+      addVariableToFrame varName varType (show addCounter)
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+    Latte.Abs.ELitFalse _ -> do
+      addCounter <- getNextVariableAndUpdate
+      let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
+      addVariableToFrame varName varType (show addCounter)
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+    _ -> do
+      addVariableToFrame varName varType (removeLeadingPercent exprString)
+
+removeLeadingPercent :: String -> String
+removeLeadingPercent s = case s of
+    ('%':rest) -> rest
+    _ -> s
+
+declareEmptyStringIfNotExists :: LCS String
+declareEmptyStringIfNotExists = do
+  s <- get
+  case Map.lookup "" (stringPool s) of
+    Just label -> return (show label)
+    Nothing -> do
+      stringId <- findOrDeclareString ""
+      let strLabel = "@empty_str" ++ show stringId
+      let llvmString = convertToLlvmString ""
+      let declaration = strLabel ++ " = private unnamed_addr constant [ 1 x i8] c\"" ++ llvmString ++ "\""
+      modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
+      return strLabel
 
 --EXPRESSIONS SECTION
 class CompileExpr a where
@@ -420,15 +461,8 @@ instance CompileExpr Latte.Abs.Expr where
           maybeVar <- lookupVariable varName
           case maybeVar of
             Just (varType, llvmVarName) -> do
-              if Map.member varName (arguments s) && llvmVarName == varName then do
-                addExprToFrame node varName
-                return $ "%" ++ varName
-              else do
-                counter <- getNextVariableAndUpdate
-                let loadInstr = "%" ++ show counter ++ " = load " ++ typeToLlvmKeyword varType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ [loadInstr]}
-                addExprToFrame node (show counter)
-                return $ "%" ++ show counter
+              addExprToFrame node llvmVarName
+              return $ "%" ++ llvmVarName
             Nothing -> throwError $ "Variable not defined: " ++ varName
     Latte.Abs.EApp p ident exprs -> do
       lookupExpr <- lookupExprsFrame node
@@ -519,21 +553,23 @@ instance Compile Latte.Abs.Stmt where
           let varName = name ident
           let varType = keywordToType type_
           counter <- getNextVariableAndUpdate
-          addVariableToFrame varName varType (show counter)
-          let varDeclaration = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
+          case varType of
+            String -> do
+              emptyStringLabel <- declareEmptyStringIfNotExists
+              let call = "%"++ show counter ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++ 
+                    emptyStringLabel ++ ", i32 0, i32 0"
+              addVariableToFrame varName varType (show counter)
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
+            _ -> do
+              let declToZero = "%" ++ show counter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
+              addVariableToFrame varName varType (show counter)
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [declToZero] }
         Latte.Abs.Init _ ident expr -> do
           let varName = name ident
           let varType = keywordToType type_
           e <- compilerExpr expr
-          counter <- getNextVariableAndUpdate
-          addVariableToFrame varName varType (show counter)
-          let varDeclaration = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ [varDeclaration] }
-          exprWithType <- combineTypeAndIndentOfExpr expr e
-          let varAssignment = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
-          removeExprsWithVarFromAllFrames varName
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ [varAssignment]}
+          fakeInitInsteadOfAlloca varName varType e expr
+          -- removeExprsWithVarFromAllFrames varName
       Latte.Abs.Ass p ident expr -> do
         s <- get
         let varName = name ident
@@ -542,19 +578,12 @@ instance Compile Latte.Abs.Stmt where
           Just (varType, llvmVarName) -> do
             e <- compilerExpr expr
             exprWithType <- combineTypeAndIndentOfExpr expr e
-            if Map.member varName (arguments s) && (varName == llvmVarName) then do
-              counter <- getNextVariableAndUpdate
-              let allocaInstr = "%" ++ show counter ++ " = alloca " ++ typeToLlvmKeyword varType
-              let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ show counter
-              addVariableToFrame varName varType (show counter)
-              removeExprsWithVarFromAllFrames varName
-              modify $ \s -> s {
-                compilerOutput = compilerOutput s ++ [allocaInstr, storeInstr]
-              }
-            else do
-              let storeInstr = "store " ++ exprWithType ++ ", " ++ typeToLlvmKeyword varType ++ "* %" ++ llvmVarName
-              removeExprsWithVarFromAllFrames varName
-              modify $ \s -> s {compilerOutput = compilerOutput s ++ [storeInstr]}
+            -- if Map.member varName (arguments s) && (varName == llvmVarName) then do --TODO zastanowic sie czy to rozróżnienie jest potrzebne
+            fakeInitInsteadOfAlloca varName varType e expr
+            -- else do
+            --   fakeInitInsteadOfAlloca varName varType e expr
+              -- removeExprsWithVarFromAllFrames varName
+              -- modify $ \s -> s {compilerOutput = compilerOutput s ++ [storeInstr]}
           Nothing -> throwError $ "Variable not defined: " ++ varName
       Latte.Abs.Cond p expr stmt -> do
         e <- compilerExpr expr
