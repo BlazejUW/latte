@@ -1,0 +1,20 @@
+int main(){
+    boolean a = true;
+    boolean b = false;
+    boolean c = a && b;
+    if(c){
+        printInt(1);
+    }
+    else{
+        printInt(0);
+    }
+    boolean d = a || b;
+    if(d){
+        printInt(1);
+    }
+    else{
+        printInt(0);
+    }
+    boolean e = a&&!b;
+    return 0;
+}
