@@ -1,0 +1,14 @@
+int main(){
+    int a = 3;
+    int b = 4;
+    int c = 3;
+    if(c == 3){
+        a++;
+    }
+    else{
+        b++;
+    }
+    printInt(a);
+    printInt(b);
+    return 0;
+}

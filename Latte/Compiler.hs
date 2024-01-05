@@ -19,7 +19,6 @@ import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword, convertToLlvmChar)
 import Data.Void (Void)
 import qualified Distribution.Simple as Latte
-import Control.Applicative ((<|>))
 
 --STATE SECTION
 data CompilerState = CompilerState
@@ -89,8 +88,14 @@ popExprsFrame = modify $ \s -> s {
 
 addExprToFrame :: Latte.Abs.Expr -> String -> LCS ()
 addExprToFrame expr llvmVarName = modify $ \s ->
-  let (currentFrame:rest) = computedExprsStack s
-  in s { computedExprsStack = ((expr, llvmVarName) : currentFrame) : rest }
+  case computedExprsStack s of
+    (currentFrame:rest) -> 
+      -- Istniejące ramki
+      s { computedExprsStack = ((expr, llvmVarName) : currentFrame) : rest }
+    [] -> 
+      -- Pusty stos, inicjalizuj z nową ramką
+      s { computedExprsStack = [[(expr, llvmVarName)]] }
+
 
 
 getVariableType :: String -> LCS Type
@@ -167,14 +172,14 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     pushPhiNodesFrame
     fakeWhileRunAndAddPhiBlock expr stmt counter
     variablesStackAfterFakeLoop <- gets variablesStack
-    popPhiNodesFrame
+    popPhiNodesFrameAndMergeInIntoStack
     e <- compilerExpr expr
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
     pushLabelToStack bodyLabel
     compile stmt
     popExprsFrame
-    popPhiNodesFrame
+    popPhiNodesFrameAndMergeInIntoStack
     modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { returnReached = originalReturnFlag}
@@ -289,32 +294,40 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
   Latte.Abs.ELitInt _ _ -> do
     addCounter <- getNextVariableAndUpdate
     let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, " ++ exprString
-    if isItAssignment then
+    if isItAssignment then do
       updateVariableInStack varName varType (show addCounter)
-    else
+      addPhiNodeToFrame varName varType (show addCounter)
+    else do
       addVariableToFrame varName varType (show addCounter)
+      -- addPhiNodeToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitTrue _ -> do
     addCounter <- getNextVariableAndUpdate
     let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 1"
-    if isItAssignment then
+    if isItAssignment then do
       updateVariableInStack varName varType (show addCounter)
-    else
+      addPhiNodeToFrame varName varType (show addCounter)
+    else do
       addVariableToFrame varName varType (show addCounter)
+      -- addPhiNodeToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitFalse _ -> do
     addCounter <- getNextVariableAndUpdate
     let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
-    if isItAssignment then
+    if isItAssignment then do
       updateVariableInStack varName varType (show addCounter)
-    else
+      addPhiNodeToFrame varName varType (show addCounter)
+    else do
       addVariableToFrame varName varType (show addCounter)
+      -- addPhiNodeToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   _ -> do
     if isItAssignment then do
       updateVariableInStack varName varType (removeLeadingPercent exprString)
-    else
+      addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
+    else do
       addVariableToFrame varName varType (removeLeadingPercent exprString)
+      -- addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
 
 
 removeLeadingPercent :: String -> String
@@ -338,12 +351,47 @@ declareEmptyStringIfNotExists = do
 pushPhiNodesFrame :: LCS ()
 pushPhiNodesFrame = modify $ \s -> s { phiNodesStack = Map.empty : phiNodesStack s }
 
+popPhiNodesFrameAndMergeInIntoStack :: LCS ()
+popPhiNodesFrameAndMergeInIntoStack = do
+  topFrame <- gets $ \s -> case phiNodesStack s of
+    (frame:_) -> frame
+    _ -> Map.empty
+  stack <- gets phiNodesStack
+  case stack of
+    -- Jeśli na stosie jest tylko jedna ramka, zaktualizuj stan stosu
+    -- bez usuwania tej ramki
+    [_] -> modify $ \s -> s { phiNodesStack = [topFrame] }
+    -- Jeśli na stosie jest więcej niż jedna ramka
+    (_:rest) -> do
+      -- Usuń najwyższą ramkę ze stosu
+      popPhiNodesFrame
+      -- Pobierz aktualny stan stosu
+      newStack <- gets phiNodesStack
+      case newStack of
+        (currentTopFrame:rest) -> do
+          -- Połącz ramki i zaktualizuj stan stosu
+          let mergedFrame = mergePhiFrames currentTopFrame topFrame
+          modify $ \s -> s { phiNodesStack = mergedFrame : rest }
+        -- Teoretycznie, ten przypadek nie powinien mieć miejsca,
+        -- ponieważ obsługujemy już wcześniej przypadek pojedynczej ramki
+        _ -> return ()
+    -- Gdy stos jest pusty, dodaj topFrame
+    [] -> modify $ \s -> s { phiNodesStack = [topFrame] }
+
 popPhiNodesFrame :: LCS ()
 popPhiNodesFrame = modify $ \s -> s {
   phiNodesStack = case phiNodesStack s of
       (_:rest) -> rest
       [] -> []
   }
+
+mergePhiFrames :: Map String (Type, String) -> Map String (Type, String) -> Map String (Type, String)
+mergePhiFrames frame1 frame2 = Map.union frame2 frame1  -- frame2 ma pierwszeństwo
+
+getTopPhiFrame :: LCS (Map String (Type, String))
+getTopPhiFrame = gets $ \s -> case phiNodesStack s of
+  (topFrame:_) -> topFrame
+  _ -> Map.empty
 
 addPhiNodeToFrame :: String -> Type -> String -> LCS ()
 addPhiNodeToFrame varName varType llvmVarName = modify $ \s ->
@@ -384,11 +432,19 @@ createPhiNode varName varType regBefore regAfter labelBefore labelAfter = do
   s <- get 
   labelCounter <- getNextPhiCounterAndUpdate
   updateVariableInStack varName varType ("phi_value_" ++ show labelCounter)
+  updateVariableInPhiTopFrame varName varType ("phi_value_" ++ show labelCounter)
   return ("%" ++ "phi_value_" ++ show labelCounter ++ " = phi " ++
     typeToLlvmKeyword varType ++ " [ %" ++ regBefore ++ ", %" ++
     labelBefore ++ " ], [ %" ++ regAfter ++ ", %" ++ labelAfter ++ " ]")
 
+updateVariableInPhiTopFrame :: String -> Type -> String -> LCS ()
+updateVariableInPhiTopFrame  varName varType newReg = do
+  s <- get
+  let (currentFrame:rest) = phiNodesStack s
+  let updatedFrame = Map.insert varName (varType, newReg) currentFrame
+  put s { phiNodesStack = updatedFrame : rest }
 
+fakeWhileRunAndAddPhiBlock :: Latte.Abs.Expr -> Latte.Abs.Stmt -> Int -> StateT CompilerState (Either CompilerError) ()
 fakeWhileRunAndAddPhiBlock expr stmt labelCounter = do
   s <- get
   phiLabel <- getTopLabel
@@ -409,6 +465,42 @@ fakeWhileRunAndAddPhiBlock expr stmt labelCounter = do
     _ -> do
       return ()
 
+handlePhiBlockAtIfElse :: Map String (Type, String) -> Map String (Type, String) -> String -> String -> LCS [String]
+handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch = do
+  -- Krok 1: Obsługa elementów wspólnych dla obu gałęzi if-else
+  commonElements <- forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
+    case Map.lookup varName phiFrameAfterFalse of
+      Just (_, regAfterFalse) -> do
+        -- Tworzenie phi-zmiennej dla elementów wspólnych
+        phiNode <- createPhiNode varName varType regAfterTrue regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch        
+        return $ Just phiNode
+      Nothing -> do
+        -- W przypadku braku elementu w drugiej ramce
+        regBefore <- getVariableNameFromStack varName
+        phiNode <- createPhiNode varName varType regBefore regAfterTrue lastLabelInFalseBranch lastLabelInTrueBranch
+        return $ Just phiNode
+
+  -- Krok 2: Obsługa pozostałych elementów
+  remainingElements <- forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
+    -- Sprawdzenie czy element nie został już przetworzony
+    case Map.lookup varName phiFrameAfterTrue of
+      Just _ -> return Nothing -- Element już przetworzony
+      Nothing -> do
+        regBefore <- getVariableNameFromStack varName
+        phiNode <- createPhiNode varName varType regBefore regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
+        return $ Just phiNode
+
+  -- Zwracanie wszystkich utworzonych węzłów phi
+  return $ catMaybes (commonElements ++ remainingElements)
+
+-- Funkcja pomocnicza do pobierania nazwy zmiennej ze stosu
+getVariableNameFromStack :: String -> LCS String
+getVariableNameFromStack varName = do
+  maybeVar <- lookupVariable varName
+  case maybeVar of
+    Just (_, llvmVarName) -> return llvmVarName
+    Nothing -> throwError $ "Variable not defined in stack: " ++ varName
+
 
 getTopLabel :: LCS String
 getTopLabel = gets $ \s -> case labelsStack s of
@@ -424,6 +516,10 @@ popLabelFromStack = modify $ \s -> s {
       (_:rest) -> rest
       [] -> []
   }
+
+--DO USUNIĘCIA
+putMapToStringList :: Map.Map String (Type, String) -> [String]
+putMapToStringList m = [k ++ ":" ++ v | (k, (_, v)) <- Map.toList m]
 
 --EXPRESSIONS SECTION
 class CompileExpr a where
@@ -515,18 +611,18 @@ instance CompileExpr Latte.Abs.Expr where
       pushLabelToStack trueLabel
       rExpr <- compilerExpr r
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-      popLabelFromStack
       popExprsFrame
       pushExprsFrame
+      trueLabelToPhi <- getTopLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
       pushLabelToStack falseLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
       popExprsFrame
-      popLabelFromStack
+      falseLabelToPhi <- getTopLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
       pushLabelToStack endLabel
       resultVar <- getNextVariableAndUpdate
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = phi i1 [ " ++ rExpr ++ ", %" ++ trueLabel ++ " ], [ 0, %" ++ falseLabel ++ " ]"] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = phi i1 [ " ++ rExpr ++ ", %" ++ trueLabelToPhi ++ " ], [ 0, %" ++ falseLabelToPhi ++ " ]"] }
       addExprToFrame node (show resultVar)
       return $ "%" ++ show resultVar
     Latte.Abs.EOr p l r -> do
@@ -538,16 +634,21 @@ instance CompileExpr Latte.Abs.Expr where
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ lExpr ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
       pushExprsFrame
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+      pushLabelToStack trueLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
       popExprsFrame
       pushExprsFrame
+      trueLabelToPhi <- getTopLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
+      pushLabelToStack falseLabel
       rExpr <- compilerExpr r
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
       popExprsFrame
+      falseLabelToPhi <- getTopLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+      pushLabelToStack endLabel
       resultVar <- getNextVariableAndUpdate
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = phi i1 [ 1, %" ++ trueLabel ++ " ], [ " ++ rExpr ++ ", %" ++ falseLabel ++ " ]"] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = phi i1 [ 1, %" ++ trueLabelToPhi ++ " ], [ " ++ rExpr ++ ", %" ++ falseLabelToPhi ++ " ]"] }
       addExprToFrame node (show resultVar)
       return $ "%" ++ show resultVar
     Latte.Abs.Not p expr -> do
@@ -598,10 +699,6 @@ instance CompileExpr Latte.Abs.Expr where
               return $ "%" ++ show nextCounter
             _ -> throwError $ "Comparison not supported for types: " ++ show lType
     Latte.Abs.EVar p ident -> do
-      -- lookupExpr <- lookupExprsFrame node
-      -- case lookupExpr of
-      --   Just llvmVarName -> return $ "%" ++ llvmVarName
-      --   Nothing -> do
       s <- get
       let varName = name ident
       maybeVar <- lookupVariable varName
@@ -669,7 +766,6 @@ instance Compile Latte.Abs.TopDef where
     variablesCounter <- gets variablesCounter
     compile block
     returnFlag <- gets returnReached
-    --if there is no return statement in function and type is void, add return void
     when (not returnFlag && retType == Void) $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"], labelsStack = [] }
     popVariablesFrame
@@ -726,7 +822,6 @@ instance Compile Latte.Abs.Stmt where
             e <- compilerExpr expr
             exprWithType <- combineTypeAndIndentOfExpr expr e
             fakeInitInsteadOfAlloca varName varType e expr True
-            addPhiNodeToFrame varName varType (removeLeadingPercent e)
           Nothing -> throwError $ "Variable not defined: " ++ varName
       Latte.Abs.Cond p expr stmt -> do
         e <- compilerExpr expr
@@ -734,20 +829,33 @@ instance Compile Latte.Abs.Stmt where
           Latte.Abs.ELitTrue _ -> compile stmt
           Latte.Abs.ELitFalse _ -> return ()
           _ -> do
-            pushExprsFrame
             counter <- getNextLabelCounterAndUpdate
+            topLabel <- getTopLabel
             let trueLabel = "if_true_" ++ show counter
             let endLabel = "if_end_" ++ show counter
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
+            pushExprsFrame
+            pushLabelToStack trueLabel
+            pushPhiNodesFrame
+            framesBeforeIf <- gets variablesStack 
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
             originalReturnFlag <- gets returnReached
             modify $ \s -> s { returnReached = False }
             compile stmt
             returnFlag <- gets returnReached
-            unless returnFlag $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            phiFrameAfterIf <- gets phiNodesStack
+            popPhiNodesFrameAndMergeInIntoStack
+            unless returnFlag $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] } --TODO po co to
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+            lastLabel <- getTopLabel
+            pushLabelToStack endLabel
             modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
+            case phiFrameAfterIf of
+              (phiFrameAfter:_) -> do
+                phiBlock <- createPhiBlock framesBeforeIf phiFrameAfter topLabel lastLabel
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+              _ -> return ()
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
         case expr of
@@ -759,22 +867,42 @@ instance Compile Latte.Abs.Stmt where
             let falseLabel = "if_false_" ++ show counter
             let endLabel = "if_end_" ++ show counter
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+            -- true branch
             pushExprsFrame
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
+            pushPhiNodesFrame
+            pushLabelToStack trueLabel
             originalReturnFlag <- gets returnReached
+            variableStackBeforeTrueBranch <- gets variablesStack
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
             compile stmt1
             returnFlag1 <- gets returnReached
-            unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             popExprsFrame
+            modify $ \s -> s { variablesStack = variableStackBeforeTrueBranch }
+            topLabelAfterTrueBranch <- getTopLabel
+            phiFrameAfterTrueBranch <- getTopPhiFrame
+            popPhiNodesFrame
+            unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            -- false branch
+            variableStackBeforeFalseBranch <- gets variablesStack
             pushExprsFrame
+            pushPhiNodesFrame
+            pushLabelToStack falseLabel
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
             compile stmt2
+            modify $ \s -> s { variablesStack = variableStackBeforeFalseBranch }
             returnFlag2 <- gets returnReached
+            topLabelAfterFalseBranch <- getTopLabel
+            phiFrameAfterFalseBranch <- getTopPhiFrame
+            popExprsFrame
+            -- end
             unless (returnFlag1 && returnFlag2) $ do
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+              phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+              pushLabelToStack endLabel
               modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
       Latte.Abs.While p expr stmt -> do
