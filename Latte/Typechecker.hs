@@ -91,8 +91,11 @@ instance TypecheckExpr Latte.Abs.Expr where
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "arithmethics operator" p lType rType
-      modify $ \s -> s {exprTypes = Map.insert node lType (exprTypes s)}
-      return lType
+      case lType of
+        Integer -> do
+          modify $ \s -> s {exprTypes = Map.insert node Integer (exprTypes s)}
+          return Integer
+        _ -> throwError $ "Type mismatch for arithmetic operator (expected integer but got " ++ typeToKeyword lType ++ ") " ++ errLocation p
     Latte.Abs.Neg p expr -> do
       t <- typecheckExpr expr
       case t of
@@ -104,14 +107,20 @@ instance TypecheckExpr Latte.Abs.Expr where
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "&&" p lType rType
-      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
-      return Boolean
+      case lType of
+        Boolean -> do
+          modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
+          return Boolean
+        _ -> throwError $ "Type mismatch for logical operator (expected boolean but got " ++ typeToKeyword lType ++ ") " ++ errLocation p
     Latte.Abs.EOr p l r -> do
       lType <- typecheckExpr l
       rType <- typecheckExpr r
       checkTypes "||" p lType rType
-      modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
-      return Boolean
+      case lType of
+        Boolean -> do
+          modify $ \s -> s {exprTypes = Map.insert node Boolean (exprTypes s)}
+          return Boolean
+        _ -> throwError $ "Type mismatch for logical operator (expected boolean but got " ++ typeToKeyword lType ++ ") " ++ errLocation p
     Latte.Abs.Not p expr -> do
       t <- typecheckExpr expr
       case t of

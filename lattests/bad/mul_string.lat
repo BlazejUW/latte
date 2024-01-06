@@ -1,0 +1,8 @@
+int main(){
+    int i = 1;
+    int j = 2;
+    string s1 = "ala ma kota";
+    string s2 = "a kot ma ale";
+    s1*s2;
+    return 0;
+}
