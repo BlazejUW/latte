@@ -15,6 +15,7 @@ import Prelude
 import System.Environment ( getArgs )
 import System.Exit        ( exitFailure, exitWith )
 import Control.Monad      ( when )
+import System.IO
 
 import qualified Latte.Abs
 import Latte.Abs   ()
@@ -42,7 +43,8 @@ run v p s =
       putStrV v "\nParse              Failed...\n"
       putStrV v "Tokens:"
       mapM_ (putStrV v . showPosToken . mkPosToken) ts
-      putStrLn err
+      hPutStrLn stderr "ERROR\n"
+      hPutStrLn stderr err
       exitFailure
     Right tree  -> do
       putStrV v "\nParse Successful!"
@@ -50,27 +52,25 @@ run v p s =
       let typecheckResult = runTypechecker tree
       case typecheckResult of
         Left err -> do
-          putStrLn "\n## Typechecking Failed...\n"
-          putStrLn err
+          hPutStrLn stderr "ERROR\n"
+          hPutStrLn stderr "\n## Typechecking Failed...\n"
+          hPutStrLn stderr err
           exitFailure
         Right s -> do
           putStrV v "\n## Typechecking Successful!"
-        --   putStrV v $ "\n[Final State]\n\n" ++ show s
           let result = runCompiler tree (functionsSignatures s) (exprTypes s)
-            -- putStrLn (show result)
           case result of
             Left err -> do
-              putStrLn "\n## Evaluation Failed...\n"
-              putStrLn err
+              hPutStrLn stderr "ERROR\n"
+              hPutStrLn stderr "\n## Evaluation Failed...\n"
+              hPutStrLn stderr err
               exitFailure
             Right s -> do
               putStrV v "\n## Evaluation Successful!"
               putStrV v $ "\n[Final State]\n\n" ++ show s
-
               putStrV v "\n[Output]"
               let lines = unlines (compilerOutput s)
-              --w unwords (compilerOutput s) nie wypisywać pustych elementów tablicy compilerOutput
-              -- let lines = unwords (compilerOutput s)
+              hPutStrLn stderr "OK\n"
               putStr lines
               -- exitWith $ exitCode s
   where
