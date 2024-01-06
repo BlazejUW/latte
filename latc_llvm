@@ -1,0 +1,5 @@
+#!/bin/bash -e
+# $1 - path to latte source file to be compiled
+output_file_name=$(basename $1 .lat)
+./latc $1 > $output_file_name.ll
+llvm-link -S $output_file_name.ll ./lib/runtime.ll | llvm-as -o $output_file_name.bc

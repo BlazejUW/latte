@@ -1,13 +1,16 @@
-latc_llvm: src/Latte/RunCompile 
-	ln -sf src/Latte/RunCompile latc_llvm
+latc: src/Latte/RunCompile 
+	ln -sf src/Latte/RunCompile latc
 
 src/Latte/RunCompile: 
 	$(MAKE) -C src
 
 clean:
 	$(MAKE) -C src clean
-	rm -f latc_llvm
+	rm -f latc
 
 distclean:
 	$(MAKE) -C src distclean
-	rm -f latc_llvm
+	rm -f latc
+
+tar: distclean
+	tar czf bp385954.tgz src/ lib/ Makefile README.MD latc_llvm
