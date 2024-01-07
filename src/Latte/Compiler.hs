@@ -36,7 +36,8 @@ data CompilerState = CompilerState
     returnReached :: Bool,
     concatWasDeclared :: Bool,
     phiNodesStack :: [Map String (Type,String)],
-    labelsStack :: [String]
+    labelsStack :: [String],
+    inductionVariablesStack :: [Map String Bool] -- (nazwa, typ, czy jest zmienną indukcyjną)
   }
   deriving (Eq, Ord, Show)
 
@@ -89,14 +90,12 @@ popExprsFrame = modify $ \s -> s {
 addExprToFrame :: Latte.Abs.Expr -> String -> LCS ()
 addExprToFrame expr llvmVarName = modify $ \s ->
   case computedExprsStack s of
-    (currentFrame:rest) -> 
+    (currentFrame:rest) ->
       -- Istniejące ramki
       s { computedExprsStack = ((expr, llvmVarName) : currentFrame) : rest }
-    [] -> 
+    [] ->
       -- Pusty stos, inicjalizuj z nową ramką
       s { computedExprsStack = [[(expr, llvmVarName)]] }
-
-
 
 getVariableType :: String -> LCS Type
 getVariableType identifier = do
@@ -110,7 +109,7 @@ getVariableType identifier = do
 getNextVariableAndUpdate :: LCS Int
 getNextVariableAndUpdate = do
   s <- get
-  let counter = variablesCounter s 
+  let counter = variablesCounter s
   modify $ \s -> s { variablesCounter = counter + 1 }
   return counter
 
@@ -183,7 +182,7 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { returnReached = originalReturnFlag}
-    if isAlwaysTrue then 
+    if isAlwaysTrue then
       return ()
     else do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
@@ -429,7 +428,7 @@ findInPhiFrameByNameAndType name typeToFind = go
 
 createPhiNode :: String -> Type -> String -> String -> String -> String -> StateT CompilerState (Either CompilerError) String
 createPhiNode varName varType regBefore regAfter labelBefore labelAfter = do
-  s <- get 
+  s <- get
   labelCounter <- getNextPhiCounterAndUpdate
   updateVariableInStack varName varType ("phi_value_" ++ show labelCounter)
   updateVariableInPhiTopFrame varName varType ("phi_value_" ++ show labelCounter)
@@ -472,7 +471,7 @@ handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranc
     case Map.lookup varName phiFrameAfterFalse of
       Just (_, regAfterFalse) -> do
         -- Tworzenie phi-zmiennej dla elementów wspólnych
-        phiNode <- createPhiNode varName varType regAfterTrue regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch        
+        phiNode <- createPhiNode varName varType regAfterTrue regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
         return $ Just phiNode
       Nothing -> do
         -- W przypadku braku elementu w drugiej ramce
@@ -516,6 +515,131 @@ popLabelFromStack = modify $ \s -> s {
       (_:rest) -> rest
       [] -> []
   }
+
+pushInductionVariablesFrame :: LCS ()
+pushInductionVariablesFrame = modify $ \s -> s { inductionVariablesStack = Map.empty : inductionVariablesStack s }
+
+popInductionVariablesFrame :: LCS ()
+popInductionVariablesFrame = modify $ \s -> s {
+  inductionVariablesStack = case inductionVariablesStack s of
+      (_:rest) -> rest
+      [] -> []
+  }
+
+addInductionVariableToFrame :: String -> LCS ()
+addInductionVariableToFrame varName = modify $ \s ->
+  let (currentFrame:rest) = inductionVariablesStack s
+  in s { inductionVariablesStack = Map.insert varName True currentFrame : rest }
+
+markVariableAsNotInduction :: String -> LCS ()
+markVariableAsNotInduction varName = modify $ \s ->
+  let (currentFrame:rest) = inductionVariablesStack s
+  in s { inductionVariablesStack = Map.insert varName False currentFrame : rest }
+
+getTopInductionVariablesFrame :: LCS (Map String Bool)
+getTopInductionVariablesFrame = gets $ \s -> case inductionVariablesStack s of
+  (topFrame:_) -> topFrame
+  _ -> Map.empty
+
+lookupForInductionVariableInTopFrame :: String -> LCS (Maybe Bool)
+lookupForInductionVariableInTopFrame varName = do
+  topFrame <- getTopInductionVariablesFrame
+  case Map.lookup varName topFrame of
+    Just var -> return $ Just var
+    Nothing -> return Nothing
+
+analyzeStmtInLookingForIV :: Latte.Abs.Stmt -> LCS ()
+analyzeStmtInLookingForIV stmt  = case stmt of
+    Latte.Abs.BStmt _ block -> analyzeBlockInLookingForIV  block
+    Latte.Abs.Ass _ ident expr -> analyzeAssignmentInLookingForIV  (name ident) expr
+    Latte.Abs.Incr _ ident -> potentiallyMarkAsInductionVar (name ident)
+    Latte.Abs.Decr _ ident -> potentiallyMarkAsInductionVar (name ident)
+    Latte.Abs.Cond _ _ stms -> analyzeStmtInLookingForIV stmt
+    Latte.Abs.CondElse _ _ stmt1 stmt2 -> do
+      analyzeStmtInLookingForIV stmt1
+      analyzeStmtInLookingForIV stmt2
+    _ -> return ()  -- Pominięcie innych typów instrukcji
+
+-- Analiza bloku instrukcji
+analyzeBlockInLookingForIV  :: Latte.Abs.Block  -> LCS ()
+analyzeBlockInLookingForIV  (Latte.Abs.Block _ stmts) = mapM_ analyzeStmtInLookingForIV  stmts
+
+-- Analiza przypisania
+analyzeAssignmentInLookingForIV  :: String -> Latte.Abs.Expr  -> LCS ()
+analyzeAssignmentInLookingForIV  varName expr  = case expr of
+    Latte.Abs.EAdd _ expr1 _ expr2 -> analyzeAddMulExpr varName expr1 expr2
+    Latte.Abs.EMul _ expr1 _ expr2 -> analyzeAddMulExpr varName expr1 expr2
+    Latte.Abs.ELitInt _ _ -> potentiallyMarkAsInductionVar varName
+    Latte.Abs.EVar _ ident -> do
+      isPotentiallyInduction <- analyzeExprForInduction varName expr
+      if isPotentiallyInduction then
+        potentiallyMarkAsInductionVar varName
+      else do
+        markVariableAsNotInduction varName
+    Latte.Abs.Neg _ expr -> do
+      isPotentiallyInduction <- analyzeExprForInduction varName expr
+      if isPotentiallyInduction then
+        potentiallyMarkAsInductionVar varName
+      else do
+        markVariableAsNotInduction varName
+    _ -> markVariableAsNotInduction varName
+
+-- Analiza dodawania i mnożenia
+analyzeAddMulExpr :: String -> Latte.Abs.Expr -> Latte.Abs.Expr -> LCS ()
+analyzeAddMulExpr varName expr1 expr2 = do
+  results <- mapM (analyzeExprForInduction varName) [expr1, expr2]
+  if and results then
+    potentiallyMarkAsInductionVar varName
+  else
+    markVariableAsNotInduction varName
+
+analyzeExprForInduction :: String -> Latte.Abs.Expr -> LCS Bool
+analyzeExprForInduction varName expr = case expr of
+    Latte.Abs.EVar _ ident -> do
+        maybeIndVar <- lookupForInductionVariableInTopFrame (name ident)
+        case maybeIndVar of
+            Just True -> return True
+            _ -> return False
+    Latte.Abs.ELitInt _ _ -> return True
+    Latte.Abs.Neg _ expr -> analyzeExprForInduction varName expr
+    Latte.Abs.EAdd _ expr1 op expr2 -> do
+      res1 <- analyzeExprForInduction varName expr1
+      res2 <- analyzeExprForInduction varName expr2
+      return (res1 && res2)
+    Latte.Abs.EMul _ expr1 op expr2 -> do
+      res1 <- analyzeExprForInduction varName expr1
+      res2 <- analyzeExprForInduction varName expr2
+      return (res1 && res2)
+    _ -> return False
+
+-- Oznaczanie zmiennej jako indukcyjnej
+potentiallyMarkAsInductionVar :: String -> LCS ()
+potentiallyMarkAsInductionVar varName = do
+  lookupResult <- lookupForInductionVariableInTopFrame varName
+  case lookupResult of
+    Just _ -> return ()
+    Nothing -> do
+      addInductionVariableToFrame varName
+      return ()
+
+analyzeWhileLoop :: Latte.Abs.Stmt -> LCS () --funkcja odpowiadająca za znalezienie zmiennych indukcyjnych w pętli while
+analyzeWhileLoop stmt = do
+    pushInductionVariablesFrame
+    iterativelyAnalyzeBodyOfWhile stmt
+    popInductionVariablesFrame
+
+iterativelyAnalyzeBodyOfWhile :: Latte.Abs.Stmt -> LCS ()
+iterativelyAnalyzeBodyOfWhile stmt = do
+    previousCount <- countInductionVariables
+    analyzeStmtInLookingForIV stmt
+    newCount <- countInductionVariables
+    unless (newCount == previousCount) $
+        iterativelyAnalyzeBodyOfWhile stmt
+
+countInductionVariables :: LCS Int
+countInductionVariables = do
+    length . filter id . Map.elems <$> getTopInductionVariablesFrame
+
 
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
@@ -770,7 +894,7 @@ instance Compile Latte.Abs.TopDef where
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"], labelsStack = [] }
     popVariablesFrame
     popExprsFrame
-    
+
 
 instance Compile Latte.Abs.Block where
   compile (Latte.Abs.Block _ stmts) = do
@@ -837,7 +961,7 @@ instance Compile Latte.Abs.Stmt where
             pushExprsFrame
             pushLabelToStack trueLabel
             pushPhiNodesFrame
-            framesBeforeIf <- gets variablesStack 
+            framesBeforeIf <- gets variablesStack
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
             originalReturnFlag <- gets returnReached
             modify $ \s -> s { returnReached = False }
@@ -951,7 +1075,8 @@ runCompiler program functionsSignatures exprTypes = execStateT (compile program)
       returnReached = False,
       concatWasDeclared = False,
       phiNodesStack = [],
-      labelsStack = []
+      labelsStack = [],
+      inductionVariablesStack = []
     }
     predefFunctions =
       [

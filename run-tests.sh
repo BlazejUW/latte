@@ -36,7 +36,7 @@ echo "--- EASY TESTS: ---"
 # Run all tests from good/ directory
 for file in ./lattests/easy_tests/*.lat; do
     echo -n "Running test $file... "
-    ./src/Latte/RunCompile $file | llvm-link - -S ./lib/runtime.bc | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
+    ./src/Latte/RunCompile $file | llvm-link - -S ./lib/runtime_for_mac.bc | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
 done
 
 
@@ -44,7 +44,7 @@ echo "--- SHOULD NOT FAIL: ---"
 # Run all tests from good/ directory
 for file in ./lattests/good/*.lat; do
     echo -n "Running test $file... "
-    ./src/Latte/RunCompile $file | llvm-link - -S ./lib/runtime.bc | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
+    ./src/Latte/RunCompile $file | llvm-link - -S ./lib/runtime_for_mac.bc | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
 done
 
 
