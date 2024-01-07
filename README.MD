@@ -16,21 +16,21 @@ W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozsze
 
 ## Uruchamianie
 Aby uruchomić kompilator należy:
-* użyć polecenia make w katalogu głównym projektu. W wyniku jego działania powstaje plik wykonywalny latc
-* użyć polecenia ./latc nazwa_pliku.lat w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku powodzenia na standardowe wyjście zostanie wypisany kod LLVM.
-* użyć polecenia ./latc_llvm nazwa_pliku.lat w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku działania tego polecenia powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
+* użyć polecenia `make` w katalogu głównym projektu. W wyniku jego działania powstaje plik wykonywalny latc
+* użyć polecenia `./latc nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku powodzenia na standardowe wyjście zostanie wypisany kod LLVM.
+* użyć polecenia `./latc_llvm nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku działania tego polecenia powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
 
 ### Struktura Projektu:
-1. Katalog src/Latte: Główny katalog zawierający kod źródłowy kompilatora. W tym katalogu znajdują się wszystkie niezbędne moduły Haskell, takie jak moduł analizy składniowej (Abs.hs), lekser (Lex.hs), parser (Par.hs), moduł drukujący (Print.hs), moduł pomocniczy (Helpers.hs). Zamieszczam te pakiety jako źródłowe, gdyż na serwerze students używane przeze mnie w projekcie polecenie bnfc nie działa prawidłowo. Z tego względu dołączam pliki wygenreowane przez bnfc. W tym katalogu znajdują się także moduły Compiler.hs, Typechecker.hs i RunCompile.hs:
-* Typechecker.hs: Moduł odpowiedzialny za sprawdzanie typów w drzewie składniowym. Zbiera informacje o typach wyrażeń i funkcji, które są później wykorzystywane w procesie kompilacji.
-* Compiler.hs: Główny moduł kompilatora, który przetwarza drzewo składniowe na kod pośredni LLVM. Zawiera logikę kompilacji, w tym obsługę pętli, konstrukcji warunkowych i innych elementów języka.
-* RunCompile.hs: Punkt wejścia aplikacji, który zarządza procesem parsowania, typecheckingu i kompilacji. Obsługuje argumenty linii poleceń i wyświetla wyniki działania kompilatora.
-2. Katalog lib: Zawiera pliki pomocnicze runtime.bc, który zawiera predefiniowane funkcje w LLVM używane podczas kompilacji i runtime.c, który zawiera kod źródłowy tych funkcji.
-3. Plik latc_llvm: Skrypt bashowy, który uruchamia kompilator plikiem latc i podlinkowuje wygenerowany kod LLVM z kodem z katalogu lib. W wyniku jego działania w katalogu w którym został użyty powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
-4. Plik src/Makefile: Plik makefile, który kompiluje kompilator i tworzy plik wykonywalny RunCompile w katalogu src/Latte.
-5. Plik Makefile: Plik makefile, który wywołuje make w katalogu src i tworzy plik wykonywalny latc w katalogu głównym.
+1. Katalog `src/Latte`: Główny katalog zawierający kod źródłowy kompilatora. W tym katalogu znajdują się wszystkie niezbędne moduły Haskell, takie jak moduł analizy składniowej (Abs.hs), lekser (Lex.hs), parser (Par.hs), moduł drukujący (Print.hs), moduł pomocniczy (Helpers.hs). Zamieszczam te pakiety jako źródłowe, gdyż na serwerze students używane przeze mnie w projekcie polecenie bnfc nie działa prawidłowo. Z tego względu dołączam pliki wygenreowane przez bnfc. W tym katalogu znajdują się także moduły Compiler.hs, Typechecker.hs i RunCompile.hs:
+* `Typechecker.hs`: Moduł odpowiedzialny za sprawdzanie typów w drzewie składniowym. Zbiera informacje o typach wyrażeń i funkcji, które są później wykorzystywane w procesie kompilacji.
+* `Compiler.hs`: Główny moduł kompilatora, który przetwarza drzewo składniowe na kod pośredni LLVM. Zawiera logikę kompilacji, w tym obsługę pętli, konstrukcji warunkowych i innych elementów języka.
+* `RunCompile.hs`: Punkt wejścia aplikacji, który zarządza procesem parsowania, typecheckingu i kompilacji. Obsługuje argumenty linii poleceń i wyświetla wyniki działania kompilatora.
+2. Katalog `lib`: Zawiera pliki pomocnicze runtime.bc, który zawiera predefiniowane funkcje w LLVM używane podczas kompilacji i runtime.c, który zawiera kod źródłowy tych funkcji.
+3. Plik `latc_llvm`: Skrypt bashowy, który uruchamia kompilator plikiem latc i podlinkowuje wygenerowany kod LLVM z kodem z katalogu lib. W wyniku jego działania w katalogu w którym został użyty powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
+4. Plik `src/Makefile`: Plik makefile, który kompiluje kompilator i tworzy plik wykonywalny RunCompile w katalogu src/Latte.
+5. Plik `Makefile`: Plik makefile, który wywołuje make w katalogu src i tworzy plik wykonywalny latc w katalogu głównym.
 
-6. * Plik latc: Plik wykonywalny, powstający po uruchomieniu komendy make uruchamiający kompilator. Nie jest dołączony do projektu, ale postanawiam umieścić go w README, żeby zaznaczyć, że plik ten jest linkiem do pliku RunCompile w katalogu src/Latte.
+6. * Plik `latc`: Plik wykonywalny, powstający po uruchomieniu komendy make uruchamiający kompilator. Nie jest dołączony do projektu, ale postanawiam umieścić go w README, żeby zaznaczyć, że plik ten jest linkiem do pliku RunCompile w katalogu src/Latte.
 
 ## Szczegóły kompilacji
 1. Budowanie Drzewa Składniowego:
