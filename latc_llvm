@@ -1,0 +1,11 @@
+#!/bin/bash -e
+# $1 - path to latte source file to be compiled
+output_file_name=$(basename $1 .lat)
+
+# Uruchomienie latc i sprawdzenie, czy zakończyło się sukcesem
+if ./latc $1 > $output_file_name.ll; then
+    llvm-link -S $output_file_name.ll ./lib/runtime.bc | llvm-as -o $output_file_name.bc
+else
+    rm -f $output_file_name.ll
+    exit 1
+fi
