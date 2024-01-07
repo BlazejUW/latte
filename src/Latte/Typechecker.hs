@@ -44,7 +44,6 @@ popFrame = modify $ \s -> s {
       [] -> []
   }
 
-
 addVariableToFrame :: Latte.Abs.Ident -> Type -> LTS ()
 addVariableToFrame ident t = modify $ \s ->
   let (currentFrame:rest) = variablesStack s
@@ -85,7 +84,6 @@ instance TypecheckExpr Latte.Abs.Expr where
       rType <- typecheckExpr r
       checkTypes "arithmethics operator" p lType rType
       modify $ \s -> s {exprTypes = Map.insert node lType (exprTypes s)}
-      -- poszukać czy w haskellu jest jakaś funkcja, która będzie cache'ować węzeł i typ
       return lType
     Latte.Abs.EMul p l op r -> do
       lType <- typecheckExpr l

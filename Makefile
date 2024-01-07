@@ -12,5 +12,5 @@ distclean:
 	$(MAKE) -C src distclean
 	rm -f latc
 
-tar: distclean
+tar: clean
 	tar czf bp385954.tgz src/ lib/ Makefile README.MD latc_llvm
