@@ -709,8 +709,8 @@ instance CompileExpr Latte.Abs.Expr where
                 Latte.Abs.Minus _ -> "sub"
           counter <- getNextVariableAndUpdate
           lType <- getExpressionType l
-          case lType of
-            String -> do
+          case (lType, op) of
+            (String, Latte.Abs.Plus _) -> do
               let call = "%" ++ show counter ++ " = call i8* @doNotUseThatNameConcat(i8* " ++ l' ++ ", i8* " ++ r' ++ ")"
               concatWasDeclared <- gets concatWasDeclared
               unless concatWasDeclared $ do
@@ -719,11 +719,15 @@ instance CompileExpr Latte.Abs.Expr where
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
               addExprToFrame node (show counter)
               return $ "%" ++ show counter
-            Integer -> do
+            (String, _) -> throwError ("Cannot subtract strings, only concatenation is allowed, at " ++ errLocation p)
+            (Integer, _) -> do
+              let op' = case op of
+                    Latte.Abs.Plus _ -> "add"
+                    Latte.Abs.Minus _ -> "sub"
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
               addExprToFrame node (show counter)
               return $ "%" ++ show counter
-            _ -> throwError $ "Cannot add two: " ++ show lType
+            _ -> throwError $ "Cannot add two: " ++ show lType ++ " and " ++ show r ++ ", at " ++ errLocation p
     Latte.Abs.EMul p l op r -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -847,7 +851,7 @@ instance CompileExpr Latte.Abs.Expr where
               modify $ \s -> s { compilerOutput = "declare i32 @strcmp(i8*, i8*)" : compilerOutput s }
               addExprToFrame node (show nextCounter)
               return $ "%" ++ show nextCounter
-            _ -> throwError $ "Comparison not supported for types: " ++ show lType
+            _ -> throwError $ "Comparison not supported for types: " ++ show lType ++ " and " ++ show r ++ ", at " ++ errLocation p
     Latte.Abs.EVar p ident -> do
       s <- get
       let varName = name ident
@@ -856,7 +860,7 @@ instance CompileExpr Latte.Abs.Expr where
         Just (varType, llvmVarName) -> do
           addExprToFrame node llvmVarName
           return $ "%" ++ llvmVarName
-        Nothing -> throwError $ "Variable not defined: " ++ varName
+        Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", at " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -973,7 +977,7 @@ instance Compile Latte.Abs.Stmt where
             removeExprsWithVarFromAllFrames varName
             exprWithType <- combineTypeAndIndentOfExpr expr e
             fakeInitInsteadOfAlloca varName varType e expr True
-          Nothing -> throwError $ "Variable not defined: " ++ varName
+          Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", at" ++ errLocation p
       Latte.Abs.Cond p expr stmt -> do
         e <- compilerExpr expr
         case expr of
