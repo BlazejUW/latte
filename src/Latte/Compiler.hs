@@ -209,47 +209,73 @@ updateVariableInFrame frame varName varType newReg =
       in updatedFrame
     Nothing -> frame
 
+compareLatteAddOp :: Latte.Abs.AddOp -> Latte.Abs.AddOp -> Bool
+compareLatteAddOp op1 op2 = case (op1, op2) of
+    (Latte.Abs.Plus _, Latte.Abs.Plus _)   -> True
+    (Latte.Abs.Minus _, Latte.Abs.Minus _) -> True
+    _                  -> False
+
+compareLatteMulOp :: Latte.Abs.MulOp -> Latte.Abs.MulOp -> Bool
+compareLatteMulOp op1 op2 = case (op1, op2) of
+    (Latte.Abs.Times _, Latte.Abs.Times _) -> True
+    (Latte.Abs.Div _, Latte.Abs.Div _)     -> True
+    (Latte.Abs.Mod _, Latte.Abs.Mod _)     -> True
+    _                  -> False
+
+compareLatteRelOp :: Latte.Abs.RelOp -> Latte.Abs.RelOp -> Bool
+compareLatteRelOp op1 op2 = case (op1, op2) of
+    (Latte.Abs.LTH _, Latte.Abs.LTH _) -> True
+    (Latte.Abs.LE _, Latte.Abs.LE _)   -> True
+    (Latte.Abs.GTH _, Latte.Abs.GTH _) -> True
+    (Latte.Abs.GE _, Latte.Abs.GE _)   -> True
+    (Latte.Abs.EQU _, Latte.Abs.EQU _) -> True
+    (Latte.Abs.NE _, Latte.Abs.NE _)   -> True
+    _                  -> False
 
 printArg :: Latte.Abs.Arg -> String
 printArg (Latte.Abs.Arg _ argType ident) =
     typeToLlvmKeyword (keywordToType argType) ++ " %" ++ name ident
 
-isEqual :: Latte.Abs.Expr -> Latte.Abs.Expr -> LCS Bool
-isEqual expr1 expr2 = case (expr1, expr2) of
+isExprEqual :: Latte.Abs.Expr -> Latte.Abs.Expr -> LCS Bool
+isExprEqual expr1 expr2 = case (expr1, expr2) of
   (Latte.Abs.ELitTrue _, Latte.Abs.ELitTrue _) -> return True
   (Latte.Abs.ELitFalse _, Latte.Abs.ELitFalse _) -> return True
   (Latte.Abs.ELitInt _ val1, Latte.Abs.ELitInt _ val2) -> return $ val1 == val2
   (Latte.Abs.EString _ str1, Latte.Abs.EString _ str2) -> return $ str1 == str2
   (Latte.Abs.EVar _ ident1, Latte.Abs.EVar _ ident2) -> return $ name ident1 == name ident2
   (Latte.Abs.EAdd _ expr11 op1 expr12, Latte.Abs.EAdd _ expr21 op2 expr22) -> do
-    expr11EqExpr21 <- isEqual expr11 expr21
-    expr12EqExpr22 <- isEqual expr12 expr22
-    return $ expr11EqExpr21 && expr12EqExpr22 && op1 == op2
+    expr11EqExpr21 <- isExprEqual expr11 expr21
+    expr12EqExpr22 <- isExprEqual expr12 expr22
+    let opEq = compareLatteAddOp op1 op2
+    return $ expr11EqExpr21 && expr12EqExpr22 && opEq
   (Latte.Abs.EMul _ expr11 op1 expr12, Latte.Abs.EMul _ expr21 op2 expr22) -> do
-    expr11EqExpr21 <- isEqual expr11 expr21
-    expr12EqExpr22 <- isEqual expr12 expr22
-    return $ expr11EqExpr21 && expr12EqExpr22 && op1 == op2
+    expr11EqExpr21 <- isExprEqual expr11 expr21
+    expr12EqExpr22 <- isExprEqual expr12 expr22
+    let opEq = compareLatteMulOp op1 op2
+    return $ expr11EqExpr21 && expr12EqExpr22 && opEq
   (Latte.Abs.EAnd _ expr11 expr12, Latte.Abs.EAnd _ expr21 expr22) -> do
-    expr11EqExpr21 <- isEqual expr11 expr21
-    expr12EqExpr22 <- isEqual expr12 expr22
+    expr11EqExpr21 <- isExprEqual expr11 expr21
+    expr12EqExpr22 <- isExprEqual expr12 expr22
     return $ expr11EqExpr21 && expr12EqExpr22
   (Latte.Abs.EOr _ expr11 expr12, Latte.Abs.EOr _ expr21 expr22) -> do
-    expr11EqExpr21 <- isEqual expr11 expr21
-    expr12EqExpr22 <- isEqual expr12 expr22
+    expr11EqExpr21 <- isExprEqual expr11 expr21
+    expr12EqExpr22 <- isExprEqual expr12 expr22
     return $ expr11EqExpr21 && expr12EqExpr22
-  (Latte.Abs.Neg _ expr1, Latte.Abs.Neg _ expr2) -> isEqual expr1 expr2
-  (Latte.Abs.Not _ expr1, Latte.Abs.Not _ expr2) -> isEqual expr1 expr2
+  (Latte.Abs.Neg _ expr1, Latte.Abs.Neg _ expr2) -> isExprEqual expr1 expr2
+  (Latte.Abs.Not _ expr1, Latte.Abs.Not _ expr2) -> isExprEqual expr1 expr2
   (Latte.Abs.ERel _ expr11 op1 expr12, Latte.Abs.ERel _ expr21 op2 expr22) -> do
-    expr11EqExpr21 <- isEqual expr11 expr21
-    expr12EqExpr22 <- isEqual expr12 expr22
-    return $ expr11EqExpr21 && expr12EqExpr22 && op1 == op2
+    expr11EqExpr21 <- isExprEqual expr11 expr21
+    expr12EqExpr22 <- isExprEqual expr12 expr22
+    let opEq = compareLatteRelOp op1 op2
+    return $ expr11EqExpr21 && expr12EqExpr22 && opEq
   _ -> return False
 
 lookupExprsFrame :: Latte.Abs.Expr -> LCS (Maybe String)
 lookupExprsFrame expr = do
   frames <- gets computedExprsStack
   topFrame <- case frames of
-    (topFrame:_) -> return topFrame
+    (topFrame:_) -> do
+      return topFrame
     _ -> return []
   searchExprsFrame topFrame expr
 
@@ -257,8 +283,8 @@ lookupExprsFrame expr = do
 searchExprsFrame :: [(Latte.Abs.Expr, String)]-> Latte.Abs.Expr  -> LCS (Maybe String)
 searchExprsFrame [] _ = return Nothing
 searchExprsFrame ((expr, llvmVarName):rest) exprToSearch = do
-  exprsEqual <- isEqual expr exprToSearch
-  if exprsEqual then
+  exprsEqual <- isExprEqual expr exprToSearch
+  if exprsEqual then 
     return $ Just llvmVarName
   else
     searchExprsFrame rest exprToSearch
@@ -944,6 +970,7 @@ instance Compile Latte.Abs.Stmt where
         case maybeVar of
           Just (varType, llvmVarName) -> do
             e <- compilerExpr expr
+            removeExprsWithVarFromAllFrames varName
             exprWithType <- combineTypeAndIndentOfExpr expr e
             fakeInitInsteadOfAlloca varName varType e expr True
           Nothing -> throwError $ "Variable not defined: " ++ varName
