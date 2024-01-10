@@ -1,18 +1,25 @@
 # Kompilator języka Latte do LLVM
 
-Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, który można podlinkować z kodem z katalogu runtime. Kompilator obsługuje wszystkie podtawowe funkcjonalności języka Latte. Dodatkowo, zastosowałem następujące optymalizacje:
-* kod jest w postaci SSA
-* nie używa się funkcji alloca, wszystkie zmienne trzymane są w rejestrach i wykorzystuje się także funkcje phi
-* LCSE
+Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, który można podlinkować z kodem z katalogu runtime. Kompilator obsługuje wszystkie podtawowe funkcjonalności języka Latte. Aktualna wersja kompilatora obsługuje następujące funkcjonalności:
+1. Frontend: 3/4 pkt (?)
+2. Backend: 8 pkt
+3. Użycie rejestrów i phi zamiast alloc w LLVM: 2 pkt
+4. LCSE: 3 pkt
+ Aktualna punktacja: 16 pkt (?)
 
 W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozszerzenia:
-* function inlining
-* zmienne indukcyjne pętli
-* redukcja mocy pętli
-* tablice
-* struktury
-* obiekty
-* odśmiecanie
+* function inlining: 2 pkt
+* zmienne indukcyjne pętli i redukcja mocy: 2 pkt
+* GSCE: 2 pkt
+* tablice: 1 pkt
+* struktury: 2 pkt
+* obiekty: 3 pkt
+* odśmiecanie: 2 pkt
+ Suma: 30 pkt
+ Do uzyskania w drugim terminie: 14 pkt
+ Cel: 22.3 pkt
+ Brakuje do zaliczenia bez egzaminu: 6.3 pkt
+Cel w drugim terminie: min 10 pkt
 
 ## Uruchamianie
 Aby uruchomić kompilator należy:
