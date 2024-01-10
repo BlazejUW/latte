@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use lambda-case" #-}
+{-# HLINT ignore "Redundant bracket" #-}
 
 module Latte.Typechecker where
 
@@ -20,11 +21,14 @@ import Data.Void (Void)
 data TypecheckerState = TypecheckerState
   {
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
+    inlineFunctions :: Map (Latte.Abs.Ident, [Type]) Type,
     variablesStack :: [Map Latte.Abs.Ident Type],
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool,
     exprTypes :: Map Latte.Abs.Expr Type,
-    arguments :: Map Latte.Abs.Ident Type
+    arguments :: Map Latte.Abs.Ident Type,
+    isCurrentFunctionInline :: Bool,
+    currentFunctionName :: Latte.Abs.Ident
   }
   deriving (Eq, Ord, Show)
 
@@ -40,7 +44,7 @@ pushFrame = modify $ \s -> s {variablesStack = Map.empty : variablesStack s}
 popFrame :: LTS ()
 popFrame = modify $ \s -> s {
   variablesStack = case variablesStack s of
-      (_:rest) -> rest 
+      (_:rest) -> rest
       [] -> []
   }
 
@@ -50,7 +54,7 @@ addVariableToFrame ident t = modify $ \s ->
   in s { variablesStack = insert ident t currentFrame : rest }
 
 lookupVariable :: Latte.Abs.Ident -> LTS (Maybe Type)
-lookupVariable ident = gets $ \s -> 
+lookupVariable ident = gets $ \s ->
   let search [] = Nothing
       search (frame:rest) = case Map.lookup ident frame of
         Nothing -> search rest
@@ -58,9 +62,31 @@ lookupVariable ident = gets $ \s ->
   in search (variablesStack s)
 
 lookupVariableInCurrentFrame :: Latte.Abs.Ident -> LTS (Maybe Type)
-lookupVariableInCurrentFrame ident = gets $ \s -> 
+lookupVariableInCurrentFrame ident = gets $ \s ->
   let (currentFrame:rest) = variablesStack s
   in Map.lookup ident currentFrame
+
+checkIfFunctionIsInline :: Latte.Abs.Type -> Latte.Abs.Ident -> [Latte.Abs.Arg] -> LTS Bool
+checkIfFunctionIsInline t ident args = do
+  let name = Latte.Helpers.name ident
+  if take 8 name == "inline__" then do
+    let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+    let returnType = keywordToType t
+    modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
+    return True
+  else return False
+
+isPredefFunction :: Latte.Abs.Ident -> Bool
+isPredefFunction ident = do
+  Map.member ident predefFunctions
+  where
+    predefFunctions = Map.fromList
+      [ (Latte.Abs.Ident "printInt", Latte.Helpers.Void)
+      , ((Latte.Abs.Ident "printString"), Latte.Helpers.Void)
+      , (Latte.Abs.Ident "error", Latte.Helpers.Void)
+      , ((Latte.Abs.Ident "readInt"), Latte.Helpers.Integer)
+      , ((Latte.Abs.Ident "readString"), Latte.Helpers.String)
+      ]
 
 class TypecheckExpr a where
   typecheckExpr :: a -> LTS Type
@@ -142,6 +168,10 @@ instance TypecheckExpr Latte.Abs.Expr where
         _ -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       s <- get
+      isInline <- gets isCurrentFunctionInline
+      when (isInline && not (isPredefFunction ident)) $ do
+        currentFunctionName <- gets currentFunctionName
+        throwError $ "Inline function " ++ name currentFunctionName ++ " cannot call other functions: " ++ name ident ++ " " ++ errLocation p
       types <- mapM typecheckExpr exprs
       let key = (ident, types)
       case Map.lookup key (functionsSignatures s) of
@@ -172,7 +202,10 @@ instance Typecheck Latte.Abs.TopDef where
   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     let returnType = keywordToType t
+    isInline <- checkIfFunctionIsInline t ident args
+    modify $ \s -> s {isCurrentFunctionInline = isInline}
     modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
+    modify $ \s -> s {currentFunctionName = ident}
     pushFrame
     forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> do
       addVariableToFrame ident (keywordToType type_)
@@ -326,11 +359,14 @@ runTypechecker program = execStateT (typecheck program) initialState
   where
     initialState = TypecheckerState
       { functionsSignatures = predefFunctions
+      ,  inlineFunctions = Map.empty
       , variablesStack = [Map.empty]
       , expectedReturnType = Nothing
       , returnReachable = False
       , exprTypes = Map.empty
       , arguments = Map.empty
+      , isCurrentFunctionInline = False,
+      currentFunctionName = Latte.Abs.Ident ""
       }
 
     predefFunctions = Map.fromList

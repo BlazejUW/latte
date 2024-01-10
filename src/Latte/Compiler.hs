@@ -324,7 +324,6 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
       addPhiNodeToFrame varName varType (show addCounter)
     else do
       addVariableToFrame varName varType (show addCounter)
-      -- addPhiNodeToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitTrue _ -> do
     addCounter <- getNextVariableAndUpdate
@@ -334,7 +333,6 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
       addPhiNodeToFrame varName varType (show addCounter)
     else do
       addVariableToFrame varName varType (show addCounter)
-      -- addPhiNodeToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitFalse _ -> do
     addCounter <- getNextVariableAndUpdate
@@ -344,15 +342,34 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
       addPhiNodeToFrame varName varType (show addCounter)
     else do
       addVariableToFrame varName varType (show addCounter)
-      -- addPhiNodeToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+  Latte.Abs.EVar _ ident -> do
+    let varNameOfEVar = name ident
+    maybeVar <- lookupVariable varNameOfEVar
+    case maybeVar of
+      Just (varType, llvmVarName) -> do
+        case varType of
+          String -> do
+            if isItAssignment then do
+              updateVariableInStack varName varType (removeLeadingPercent exprString)
+              addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
+            else do
+              addVariableToFrame varName varType (removeLeadingPercent exprString)
+          _ -> do
+            addCounter <- getNextVariableAndUpdate
+            let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, %" ++ llvmVarName
+            if isItAssignment then do
+              updateVariableInStack varName varType (show addCounter)
+              addPhiNodeToFrame varName varType (show addCounter)
+            else do
+              addVariableToFrame varName varType (show addCounter)
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   _ -> do
     if isItAssignment then do
       updateVariableInStack varName varType (removeLeadingPercent exprString)
       addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
     else do
       addVariableToFrame varName varType (removeLeadingPercent exprString)
-      -- addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
 
 
 removeLeadingPercent :: String -> String

@@ -50,3 +50,12 @@ convertToLlvmChar c = case c of
   '\"' -> "\\22" -- Cudzysłów
   '\\' -> "\\5C" -- Backslash
   _    -> [c]
+
+
+getRelOp op = case op of
+  Latte.Abs.LTH _ -> "slt"
+  Latte.Abs.LE _ -> "sle"
+  Latte.Abs.GTH _ -> "sgt"
+  Latte.Abs.GE _ -> "sge"
+  Latte.Abs.EQU _ -> "eq"
+  Latte.Abs.NE _ -> "ne"
