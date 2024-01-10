@@ -19,6 +19,7 @@ import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword, convertToLlvmChar)
 import Data.Void (Void)
 import qualified Distribution.Simple as Latte
+import Distribution.FieldGrammar (Token(getToken))
 
 --STATE SECTION
 data CompilerState = CompilerState
@@ -37,7 +38,8 @@ data CompilerState = CompilerState
     concatWasDeclared :: Bool,
     phiNodesStack :: [Map String (Type,String)],
     labelsStack :: [String],
-    inductionVariablesStack :: [Map String Bool] -- (nazwa, typ, czy jest zmienną indukcyjną)
+    inductionVariablesStack :: [Map String Bool], -- (nazwa, typ, czy jest zmienną indukcyjną)
+    tokenWhile :: Int
   }
   deriving (Eq, Ord, Show)
 
@@ -160,8 +162,26 @@ commonDecrIncrOperation ident op = do
       addPhiNodeToFrame varName varType (show opCounter)
     Nothing -> throwError $ "Variable not defined: " ++ varName
 
+tokenWhileUp :: LCS Int
+tokenWhileUp = do
+  s <- get
+  modify $ \s -> s { tokenWhile = tokenWhile s + 1 }
+  return $ tokenWhile s
+
+tokenWhileDown :: LCS Int
+tokenWhileDown = do
+  s <- get
+  modify $ \s -> s { tokenWhile = tokenWhile s - 1 }
+  return $ tokenWhile s
+
+isAnyTokenWhileUp :: LCS Bool
+isAnyTokenWhileUp = do
+  s <- get
+  return $ tokenWhile s > 0
+
 commonWhilePart :: Latte.Abs.Expr -> Latte.Abs.Stmt -> String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
 commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
+    tokenWhileUp
     pushPhiNodesFrame
     originalReturnFlag <- gets returnReached
     modify $ \s -> s { returnReached = False }
@@ -182,6 +202,7 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { returnReached = originalReturnFlag}
+    tokenWhileDown
     if isAlwaysTrue then
       return ()
     else do
@@ -344,26 +365,34 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
       addVariableToFrame varName varType (show addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.EVar _ ident -> do
-    let varNameOfEVar = name ident
-    maybeVar <- lookupVariable varNameOfEVar
-    case maybeVar of
-      Just (varType, llvmVarName) -> do
-        case varType of
-          String -> do
-            if isItAssignment then do
-              updateVariableInStack varName varType (removeLeadingPercent exprString)
-              addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
-            else do
-              addVariableToFrame varName varType (removeLeadingPercent exprString)
-          _ -> do
-            addCounter <- getNextVariableAndUpdate
-            let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, %" ++ llvmVarName
-            if isItAssignment then do
-              updateVariableInStack varName varType (show addCounter)
-              addPhiNodeToFrame varName varType (show addCounter)
-            else do
-              addVariableToFrame varName varType (show addCounter)
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+    itIsInWhile <- isAnyTokenWhileUp
+    if itIsInWhile then do
+      let varNameOfEVar = name ident
+      maybeVar <- lookupVariable varNameOfEVar
+      case maybeVar of
+        Just (varType, llvmVarName) -> do
+          case varType of
+            String -> do
+              if isItAssignment then do
+                updateVariableInStack varName varType (removeLeadingPercent exprString)
+                addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
+              else do
+                addVariableToFrame varName varType (removeLeadingPercent exprString)
+            _ -> do
+              addCounter <- getNextVariableAndUpdate
+              let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, %" ++ llvmVarName
+              if isItAssignment then do
+                updateVariableInStack varName varType (show addCounter)
+                addPhiNodeToFrame varName varType (show addCounter)
+              else do
+                addVariableToFrame varName varType (show addCounter)
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+    else do
+      if isItAssignment then do
+        updateVariableInStack varName varType (removeLeadingPercent exprString)
+        addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
+      else do
+        addVariableToFrame varName varType (removeLeadingPercent exprString)
   _ -> do
     if isItAssignment then do
       updateVariableInStack varName varType (removeLeadingPercent exprString)
@@ -1129,7 +1158,8 @@ runCompiler program functionsSignatures exprTypes = execStateT (compile program)
       concatWasDeclared = False,
       phiNodesStack = [],
       labelsStack = [],
-      inductionVariablesStack = []
+      inductionVariablesStack = [],
+      tokenWhile = 0
     }
     predefFunctions =
       [
