@@ -367,7 +367,7 @@ declareEmptyStringIfNotExists = do
     Just label -> return (show label)
     Nothing -> do
       stringId <- findOrDeclareString ""
-      let strLabel = "@empty_str" ++ show stringId
+      let strLabel = "@str" ++ show stringId
       let llvmString = convertToLlvmString ""
       let declaration = strLabel ++ " = private unnamed_addr constant [ 1 x i8] c\"" ++ llvmString ++ "\""
       modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
@@ -685,15 +685,20 @@ instance CompileExpr Latte.Abs.Expr where
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
-          stringId <- findOrDeclareString str
-          let strLabel = "@str" ++ show stringId
+          s <- get
+          (strLabel, isNew) <- case Map.lookup str (stringPool s) of
+            Just label -> return ("@str" ++ show label, False)
+            Nothing -> do
+              stringId <- findOrDeclareString str
+              return ("@str" ++ show stringId, True)
           let llvmString = convertToLlvmString str
           let stringLength = length str + 1
           nextIndirectVariable <- getNextVariableAndUpdate
-          let declaration = strLabel ++ " = private unnamed_addr constant [" ++ show stringLength ++ " x i8] c\"" ++ llvmString ++ "\""
           let call = "%"++ show nextIndirectVariable ++ " = getelementptr inbounds [" ++ show stringLength ++
-                      " x i8], [" ++ show stringLength ++ " x i8]* " ++ strLabel ++ ", i32 0, i32 0"
-          modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
+                    " x i8], [" ++ show stringLength ++ " x i8]* " ++ strLabel ++ ", i32 0, i32 0"
+          when isNew $ do
+            let declaration = strLabel ++ " = private unnamed_addr constant [" ++ show stringLength ++ " x i8] c\"" ++ llvmString ++ "\""
+            modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
           modify $ \s -> s {compilerOutput = compilerOutput s ++ [call]}
           addExprToFrame node (show nextIndirectVariable)
           return $ "%" ++ show nextIndirectVariable

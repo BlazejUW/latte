@@ -47,7 +47,25 @@ for file in ./lattests/good/*.lat; do
     ./src/Latte/RunCompile $file | llvm-link - -S ./lib/runtime_for_mac.bc | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
 done
 
+# echo "--- STUCENCKIE SHOULD FAIL: ---"
+# for file in ./lattests/studenckie/bad/infinite_loop/*.lat; do
+#     echo -n "Running test $file... "
+#     ./src/Latte/RunCompile $file > /dev/null 2>&1 && echo -e $ERROR && exit 1 || echo -e $OK
+# done
+# for file in ./lattests/studenckie/bad/semantic/*.lat; do
+#     echo -n "Running test $file... "
+#     ./src/Latte/RunCompile $file > /dev/null 2>&1 && echo -e $ERROR && exit 1 || echo -e $OK
+# done
+# for file in ./lattests/studenckie/bad/runtime/*.lat; do
+#     echo -n "Running test $file... "
+#     ./src/Latte/RunCompile $file > /dev/null 2>&1 && echo -e $ERROR && exit 1 || echo -e $OK
+# done
 
+echo "--- STUCENCKIE SHOULD NOT FAIL: ---"
+for file in ./lattests/studenckie/good/basic/*.lat; do
+    echo -n "Running test $file... "
+    ./src/Latte/RunCompile $file | llvm-link - -S ./lib/runtime_for_mac.bc | lli | diff - ${file%.lat}.output && echo -e $OK || exit 1
+done
 
 echo "--- END ---"
 echo "All tests run - check for failures above."
