@@ -22,8 +22,7 @@ import Latte.Abs   ()
 import Latte.Lex   ( Token, mkPosToken )
 import Latte.Par   ( pProgram, myLexer )
 import Latte.Print ( Print, printTree )
---TODO compiler
-import Latte.Typechecker (runTypechecker, functionsSignatures, exprTypes, Typecheck, TypecheckerState)
+import Latte.Typechecker (runTypechecker, functionsSignatures, exprTypes, inlineFunctions, Typecheck, TypecheckerState)
 import Latte.Compiler (Compile, runCompiler, compilerOutput, CompilerState)
 
 type Err        = Either String
@@ -48,7 +47,7 @@ run p s =
           hPutStrLn stderr err
           exitFailure
         Right s -> do
-          let result = runCompiler tree (functionsSignatures s) (exprTypes s)
+          let result = runCompiler tree (functionsSignatures s) (exprTypes s) (inlineFunctions s)
           case result of
             Left err -> do
               hPutStrLn stderr "ERROR\n"

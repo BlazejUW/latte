@@ -19,7 +19,7 @@ import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword, convertToLlvmChar)
 import Data.Void (Void)
 import qualified Distribution.Simple as Latte
-import Distribution.FieldGrammar (Token(getToken))
+
 
 --STATE SECTION
 data CompilerState = CompilerState
@@ -31,6 +31,8 @@ data CompilerState = CompilerState
     phiCounter :: Int,
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     exprTypes :: Map Latte.Abs.Expr Type,
+    inlineFunctions :: Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block),
+    returnRegisterInsideInlineFunction :: String,
     computedExprsStack :: [[(Latte.Abs.Expr, String)]],
     arguments :: Map String Type,
     stringPool :: Map String Int,
@@ -78,6 +80,10 @@ lookupVariable varName = gets $ \s ->
         Nothing -> search rest
         justVar -> justVar
   in search (variablesStack s)
+
+isFunctionInline :: (Latte.Abs.Ident, [Type]) -> LCS Bool
+isFunctionInline function = do
+  gets (Map.member function . inlineFunctions)
 
 pushExprsFrame :: LCS ()
 pushExprsFrame = modify $ \s -> s { computedExprsStack = [] : computedExprsStack s }
@@ -305,7 +311,7 @@ searchExprsFrame :: [(Latte.Abs.Expr, String)]-> Latte.Abs.Expr  -> LCS (Maybe S
 searchExprsFrame [] _ = return Nothing
 searchExprsFrame ((expr, llvmVarName):rest) exprToSearch = do
   exprsEqual <- isExprEqual expr exprToSearch
-  if exprsEqual then 
+  if exprsEqual then
     return $ Just llvmVarName
   else
     searchExprsFrame rest exprToSearch
@@ -712,6 +718,73 @@ countInductionVariables :: LCS Int
 countInductionVariables = do
     length . filter id . Map.elems <$> getTopInductionVariablesFrame
 
+getArgumentRegisters :: Latte.Abs.Expr -> LCS String
+getArgumentRegisters expr = do
+  case expr of
+    Latte.Abs.ELitInt _ val -> do
+      counter <- getNextVariableAndUpdate
+      let addInstr = "%" ++ show counter ++ " = add i32 0, %" ++ show val
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+      return ("%" ++ show counter)
+    Latte.Abs.ELitTrue _ -> do
+      counter <- getNextVariableAndUpdate
+      let addInstr = "%" ++ show counter ++ " = add i32 0, 1"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+      return ("%" ++ show counter)
+    Latte.Abs.ELitFalse _ -> do
+      counter <- getNextVariableAndUpdate
+      let addInstr = "%" ++ show counter ++ " = add i32 0, 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
+      return ("%" ++ show counter)
+    _ -> compilerExpr expr
+
+inlineFunctionCall ident argsRegisters argsTypes = do
+  modify $ \s -> s { returnRegisterInsideInlineFunction = "" }
+  pushExprsFrame
+  pushVariablesFrame
+  let functionName = name ident
+  (retType,argsAbs,body) <- getInlineFunctionItems ident argsTypes
+  addInlineFunctionArgumentsToFrame argsAbs argsRegisters argsTypes
+  handleBlockOfInlineFunction body
+  gets returnRegisterInsideInlineFunction
+
+getInlineFunctionItems :: Latte.Abs.Ident -> [Type] -> StateT      CompilerState      (Either CompilerError)      (Type, [Latte.Abs.Arg], Latte.Abs.Block)
+getInlineFunctionItems ident args = do
+  inlineFunctions <- gets inlineFunctions
+  case Map.lookup (ident, args) inlineFunctions of
+    Just all -> return all
+    Nothing -> throwError $ "Function " ++ show ident ++ " with args " ++ show args ++ " not found for inlining"
+
+addInlineFunctionArgumentsToFrame :: [Latte.Abs.Arg] -> [String] -> [Type] -> LCS ()
+addInlineFunctionArgumentsToFrame functionArgs argsRegisters argsTypes = do
+  let argNames = map (\(Latte.Abs.Arg _ _ argIdent) -> name argIdent) functionArgs
+  let argsRegistersWithoutPercent = map removeLeadingPercent argsRegisters
+  let argNameTypeRegTuples = zip3 argNames argsTypes argsRegistersWithoutPercent
+  forM_ argNameTypeRegTuples $ \(argName, argType, argsRegistersWithoutPercent) -> do
+    addVariableToFrame argName argType argsRegistersWithoutPercent
+    addPhiNodeToFrame argName argType argsRegistersWithoutPercent
+
+handleBlockOfInlineFunction :: Latte.Abs.Block -> LCS ()
+handleBlockOfInlineFunction (Latte.Abs.Block _ stmts) = do
+  -- Przetwarzanie instrukcji poza return, jeśli napotkasz na return, obsłuż go inaczej niż zwyczajnie
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; inline function block: \n;" ++ show stmts ] }
+  mapM_ handleInlineStmt stmts
+
+handleInlineStmt :: Latte.Abs.Stmt -> LCS ()
+handleInlineStmt stmt = case stmt of
+  Latte.Abs.Ret _ expr -> do
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; return " ++ show expr] }
+    handleInlineReturn expr
+  _ -> do
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; compile:  " ++ show stmt] }
+    compile stmt
+
+handleInlineReturn :: Latte.Abs.Expr -> LCS ()
+handleInlineReturn expr = do
+  returnExprValue <- compilerExpr expr
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; return " ++ returnExprValue] }
+  modify $ \s -> s { returnRegisterInsideInlineFunction = returnExprValue }
+  return ()
 
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
@@ -917,24 +990,31 @@ instance CompileExpr Latte.Abs.Expr where
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
-          argExprs <- mapM compilerExpr exprs
           s <- get
           argTypes <- mapM getExpressionType exprs
           let funType = case Map.lookup (ident, argTypes) (functionsSignatures s) of
                 Just t -> t
                 _ -> error $ "Function " ++ functionName (ident, argTypes) ++ " not found"
-          let argsCall = intercalate ", " (zipWith (\ t e -> t ++ " " ++ e) (map typeToLlvmKeyword argTypes) argExprs)
-          let funCall = "call " ++ typeToLlvmKeyword funType ++ " @" ++ name ident ++ "(" ++ argsCall ++ ")"
-          case funType of
-            Void -> do
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ [funCall] }
-              return ""
-            _ -> do
-              counter <- getNextVariableAndUpdate
-              let callInstr = "%" ++ show counter ++ " = " ++ funCall
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ [callInstr]}
-              addExprToFrame node (show counter)
-              return $ "%" ++ show counter
+          isFnInline <- isFunctionInline (ident, argTypes)
+          if isFnInline then do
+            argRegisters <- mapM getArgumentRegisters exprs
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Inline function call: " ++ functionName (ident, argTypes)] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Arguments: " ++ intercalate ", " argRegisters] }
+            inlineFunctionCall ident argRegisters argTypes
+          else do
+            argExprs <- mapM compilerExpr exprs
+            let argsCall = intercalate ", " (zipWith (\ t e -> t ++ " " ++ e) (map typeToLlvmKeyword argTypes) argExprs)
+            let funCall = "call " ++ typeToLlvmKeyword funType ++ " @" ++ name ident ++ "(" ++ argsCall ++ ")"
+            case funType of
+              Void -> do
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ [funCall] }
+                return ""
+              _ -> do
+                counter <- getNextVariableAndUpdate
+                let callInstr = "%" ++ show counter ++ " = " ++ funCall
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ [callInstr]}
+                addExprToFrame node (show counter)
+                return $ "%" ++ show counter
 
 
 --COMPILE SECTION
@@ -1140,8 +1220,9 @@ instance Compile Latte.Abs.Stmt where
 
 
 --MAIN SECTION
-runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type -> Either String CompilerState
-runCompiler program functionsSignatures exprTypes = execStateT (compile program) initialState
+runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type ->
+  Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block) -> Either String CompilerState
+runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (compile program) initialState
   where
     initialState = CompilerState {
       compilerOutput = predefFunctions,
@@ -1151,6 +1232,8 @@ runCompiler program functionsSignatures exprTypes = execStateT (compile program)
       phiCounter = 0,
       functionsSignatures = functionsSignatures,
       exprTypes = exprTypes,
+      inlineFunctions = inlineFunctions,
+      returnRegisterInsideInlineFunction = "",
       computedExprsStack = [],
       arguments = Map.empty,
       stringPool = Map.empty,

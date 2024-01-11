@@ -21,7 +21,7 @@ import Data.Void (Void)
 data TypecheckerState = TypecheckerState
   {
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
-    inlineFunctions :: Map (Latte.Abs.Ident, [Type]) Type,
+    inlineFunctions :: Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block),
     variablesStack :: [Map Latte.Abs.Ident Type],
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool,
@@ -66,15 +66,45 @@ lookupVariableInCurrentFrame ident = gets $ \s ->
   let (currentFrame:rest) = variablesStack s
   in Map.lookup ident currentFrame
 
-checkIfFunctionIsInline :: Latte.Abs.Type -> Latte.Abs.Ident -> [Latte.Abs.Arg] -> LTS Bool
-checkIfFunctionIsInline t ident args = do
+checkIfFunctionIsInline :: Latte.Abs.Type' Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> [Latte.Abs.Arg' Latte.Abs.BNFC'Position] -> Latte.Abs.Block -> StateT TypecheckerState (Either String) Bool
+checkIfFunctionIsInline t ident args body = do
   let name = Latte.Helpers.name ident
   if take 8 name == "inline__" then do
+    pushFrame
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+    forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> do
+      addVariableToFrame ident (keywordToType type_)
     let returnType = keywordToType t
-    modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
+    updateFunctionForInlining ident args returnType body
+    popFrame
     return True
   else return False
+
+collectStmtsUntilReturn :: [Latte.Abs.Stmt] -> LTS [Latte.Abs.Stmt]
+collectStmtsUntilReturn stmts = go stmts []
+  where
+    go [] acc = return (reverse acc)
+    go (s:ss) acc = do
+      typecheck s
+      returnFlagAfterStmt <- gets returnReachable
+      if returnFlagAfterStmt
+        then return (reverse (s:acc))
+        else go ss (s:acc)   
+
+processFunctionBodyForInlining :: Latte.Abs.Block -> LTS Latte.Abs.Block
+processFunctionBodyForInlining (Latte.Abs.Block pos stmts) = do
+  original <- get
+  newStmts <- collectStmtsUntilReturn stmts
+  put original
+  return (Latte.Abs.Block pos newStmts)
+
+updateFunctionForInlining :: Latte.Abs.Ident -> [Latte.Abs.Arg] -> Type -> Latte.Abs.Block -> LTS ()
+updateFunctionForInlining ident args returnType body = do
+  newBody <- processFunctionBodyForInlining body
+  let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+  -- modify $ \s -> s {inlineFunctions = Map.insert (ident, argTypes) (returnType, args, newBody) (inlineFunctions s)}
+  modify $ \s -> s {inlineFunctions = Map.insert (ident, argTypes) (returnType, args, body) (inlineFunctions s)}
+
 
 isPredefFunction :: Latte.Abs.Ident -> Bool
 isPredefFunction ident = do
@@ -202,7 +232,7 @@ instance Typecheck Latte.Abs.TopDef where
   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     let returnType = keywordToType t
-    isInline <- checkIfFunctionIsInline t ident args
+    isInline <- checkIfFunctionIsInline t ident args block
     modify $ \s -> s {isCurrentFunctionInline = isInline}
     modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
     modify $ \s -> s {currentFunctionName = ident}
@@ -359,14 +389,14 @@ runTypechecker program = execStateT (typecheck program) initialState
   where
     initialState = TypecheckerState
       { functionsSignatures = predefFunctions
-      ,  inlineFunctions = Map.empty
+      , inlineFunctions = Map.empty
       , variablesStack = [Map.empty]
       , expectedReturnType = Nothing
       , returnReachable = False
       , exprTypes = Map.empty
       , arguments = Map.empty
-      , isCurrentFunctionInline = False,
-      currentFunctionName = Latte.Abs.Ident ""
+      , isCurrentFunctionInline = False
+      , currentFunctionName = Latte.Abs.Ident ""
       }
 
     predefFunctions = Map.fromList

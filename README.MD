@@ -16,7 +16,7 @@ W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozsze
 * obiekty: 3 pkt
 * odśmiecanie: 2 pkt
  Suma: 30 pkt
- Do uzyskania w drugim terminie: 14 pkt
+ Do uzyskania w drugim terminie: 15 pkt
  Cel: 22.3 pkt
  Brakuje do zaliczenia bez egzaminu: 6.3 pkt
 Cel w drugim terminie: min 10 pkt
