@@ -5,6 +5,7 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use lambda-case" #-}
 {-# LANGUAGE BlockArguments #-}
+{-# HLINT ignore "Redundant bracket" #-}
 
 module Latte.Compiler where
 
@@ -103,10 +104,8 @@ addExprToFrame :: Latte.Abs.Expr -> String -> LCS ()
 addExprToFrame expr llvmVarName = modify $ \s ->
   case computedExprsStack s of
     (currentFrame:rest) ->
-      -- Istniejące ramki
       s { computedExprsStack = ((expr, llvmVarName) : currentFrame) : rest }
     [] ->
-      -- Pusty stos, inicjalizuj z nową ramką
       s { computedExprsStack = [[(expr, llvmVarName)]] }
 
 getVariableType :: String -> LCS Type
@@ -118,12 +117,12 @@ getVariableType identifier = do
         Nothing -> findTypeInStack rest
   findTypeInStack (variablesStack state)
 
-getNextVariableAndUpdate :: LCS Int
+getNextVariableAndUpdate :: LCS String
 getNextVariableAndUpdate = do
   s <- get
   let counter = variablesCounter s
   modify $ \s -> s { variablesCounter = counter + 1 }
-  return counter
+  return ("." ++ show counter)
 
 getNextLabelCounterAndUpdate :: LCS Int
 getNextLabelCounterAndUpdate = do
@@ -166,10 +165,10 @@ commonDecrIncrOperation ident op = do
   case maybeVar of
     Just (varType, llvmVarName) -> do
       opCounter <- getNextVariableAndUpdate
-      let opInstr = "%" ++ show opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ llvmVarName ++ ", 1"
+      let opInstr = "%" ++ opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ llvmVarName ++ ", 1"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [opInstr] }
-      updateVariableInStack varName varType (show opCounter)
-      addPhiNodeToFrame varName varType (show opCounter)
+      updateVariableInStack varName varType opCounter
+      addPhiNodeToFrame varName varType opCounter
     Nothing -> throwError $ "Variable not defined: " ++ varName
 
 tokenWhileUp :: LCS Int
@@ -349,30 +348,30 @@ fakeInitInsteadOfAlloca :: String -> Type -> String -> Latte.Abs.Expr' a -> Bool
 fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case expr of
   Latte.Abs.ELitInt _ _ -> do
     addCounter <- getNextVariableAndUpdate
-    let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, " ++ exprString
+    let addInstr = "%" ++ addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, " ++ exprString
     if isItAssignment then do
-      updateVariableInStack varName varType (show addCounter)
-      addPhiNodeToFrame varName varType (show addCounter)
+      updateVariableInStack varName varType addCounter
+      addPhiNodeToFrame varName varType addCounter
     else do
-      addVariableToFrame varName varType (show addCounter)
+      addVariableToFrame varName varType addCounter
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitTrue _ -> do
     addCounter <- getNextVariableAndUpdate
-    let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 1"
+    let addInstr = "%" ++ addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 1"
     if isItAssignment then do
-      updateVariableInStack varName varType (show addCounter)
-      addPhiNodeToFrame varName varType (show addCounter)
+      updateVariableInStack varName varType ( addCounter)
+      addPhiNodeToFrame varName varType ( addCounter)
     else do
-      addVariableToFrame varName varType (show addCounter)
+      addVariableToFrame varName varType ( addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitFalse _ -> do
     addCounter <- getNextVariableAndUpdate
-    let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
+    let addInstr = "%" ++  addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
     if isItAssignment then do
-      updateVariableInStack varName varType (show addCounter)
-      addPhiNodeToFrame varName varType (show addCounter)
+      updateVariableInStack varName varType ( addCounter)
+      addPhiNodeToFrame varName varType ( addCounter)
     else do
-      addVariableToFrame varName varType (show addCounter)
+      addVariableToFrame varName varType ( addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.EVar _ ident -> do
     itIsInWhile <- isAnyTokenWhileUp
@@ -390,12 +389,12 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
                 addVariableToFrame varName varType (removeLeadingPercent exprString)
             _ -> do
               addCounter <- getNextVariableAndUpdate
-              let addInstr = "%" ++ show addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, %" ++ llvmVarName
+              let addInstr = "%" ++  addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, %" ++ llvmVarName
               if isItAssignment then do
-                updateVariableInStack varName varType (show addCounter)
-                addPhiNodeToFrame varName varType (show addCounter)
+                updateVariableInStack varName varType ( addCounter)
+                addPhiNodeToFrame varName varType ( addCounter)
               else do
-                addVariableToFrame varName varType (show addCounter)
+                addVariableToFrame varName varType ( addCounter)
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
     else do
       if isItAssignment then do
@@ -727,24 +726,24 @@ getArgumentRegisters expr = do
   case expr of
     Latte.Abs.ELitInt _ val -> do
       counter <- getNextVariableAndUpdate
-      let addInstr = "%" ++ show counter ++ " = add i32 0, %" ++ show val
+      let addInstr = "%" ++  counter ++ " = add i32 0, %" ++ show val
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
-      return ("%" ++ show counter)
+      return ("%" ++  counter)
     Latte.Abs.ELitTrue _ -> do
       counter <- getNextVariableAndUpdate
-      let addInstr = "%" ++ show counter ++ " = add i32 0, 1"
+      let addInstr = "%" ++  counter ++ " = add i32 0, 1"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
-      return ("%" ++ show counter)
+      return ("%" ++  counter)
     Latte.Abs.ELitFalse _ -> do
       counter <- getNextVariableAndUpdate
-      let addInstr = "%" ++ show counter ++ " = add i32 0, 0"
+      let addInstr = "%" ++  counter ++ " = add i32 0, 0"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
-      return ("%" ++ show counter)
+      return ("%" ++  counter)
     _ -> compilerExpr expr
 
 pushInlineFunctionReturnFrame :: LCS ()
-pushInlineFunctionReturnFrame = 
-  modify $ \s -> s { 
+pushInlineFunctionReturnFrame =
+  modify $ \s -> s {
     inlineFunctionsReturnStack = Map.empty : inlineFunctionsReturnStack s,
     inlineFunctionsToken = inlineFunctionsToken s + 1
     }
@@ -769,7 +768,7 @@ checkIfCodeIsInsideInlineFunction = do
 
 findLabelForThisInlineFunction :: LCS String
 findLabelForThisInlineFunction = do
-  labelCouter <- getNextLabelCounterAndUpdate 
+  labelCouter <- getNextLabelCounterAndUpdate
   let label = "inline_function_" ++ show labelCouter
   modify $ \s -> s { inlineFunctionsLabelsStack = label : inlineFunctionsLabelsStack s }
   return label
@@ -825,8 +824,8 @@ handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd = do
     _ -> Map.empty
   let phiEntries = map (\(label, reg) -> "[ " ++ reg ++ ", %" ++ label ++ " ]") $ Map.toList topFrame
   let phiString = intercalate ", " phiEntries
-  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = phi "++ typeToLlvmKeyword functionType ++ " " ++ phiString] }
-  return ("%" ++ show counter)
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  counter ++ " = phi "++ typeToLlvmKeyword functionType ++ " " ++ phiString] }
+  return ("%" ++  counter)
 
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
@@ -855,7 +854,7 @@ instance CompileExpr Latte.Abs.Expr where
           let llvmString = convertToLlvmString str
           let stringLength = length str + 1
           nextIndirectVariable <- getNextVariableAndUpdate
-          let call = "%"++ show nextIndirectVariable ++ " = getelementptr inbounds [" ++ show stringLength ++
+          let call = "%"++  nextIndirectVariable ++ " = getelementptr inbounds [" ++ show stringLength ++
                     " x i8], [" ++ show stringLength ++ " x i8]* " ++ strLabel ++ ", i32 0, i32 0"
           when isNew $ do
             let declaration = strLabel ++ " = private unnamed_addr constant [" ++ show stringLength ++ " x i8] c\"" ++ llvmString ++ "\""
@@ -877,22 +876,22 @@ instance CompileExpr Latte.Abs.Expr where
           lType <- getExpressionType l
           case (lType, op) of
             (String, Latte.Abs.Plus _) -> do
-              let call = "%" ++ show counter ++ " = call i8* @doNotUseThatNameConcat(i8* " ++ l' ++ ", i8* " ++ r' ++ ")"
+              let call = "%" ++  counter ++ " = call i8* @doNotUseThatNameConcat(i8* " ++ l' ++ ", i8* " ++ r' ++ ")"
               concatWasDeclared <- gets concatWasDeclared
               unless concatWasDeclared $ do
                 modify $ \s -> s { compilerOutput = "declare i8* @doNotUseThatNameConcat(i8*, i8*)" : compilerOutput s }
                 modify $ \s -> s { concatWasDeclared = True }
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
-              addExprToFrame node (show counter)
-              return $ "%" ++ show counter
+              addExprToFrame node ( counter)
+              return $ "%" ++ counter
             (String, _) -> throwError ("Cannot subtract strings, only concatenation is allowed, at " ++ errLocation p)
             (Integer, _) -> do
               let op' = case op of
                     Latte.Abs.Plus _ -> "add"
                     Latte.Abs.Minus _ -> "sub"
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
-              addExprToFrame node (show counter)
-              return $ "%" ++ show counter
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
+              addExprToFrame node ( counter)
+              return $ "%" ++  counter
             _ -> throwError $ "Cannot add two: " ++ show lType ++ " and " ++ show r ++ ", at " ++ errLocation p
     Latte.Abs.EMul p l op r -> do
       lookupExpr <- lookupExprsFrame node
@@ -906,9 +905,9 @@ instance CompileExpr Latte.Abs.Expr where
                 Latte.Abs.Div _ -> "sdiv"
                 Latte.Abs.Mod _ -> "srem"
           counter <- getNextVariableAndUpdate
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
-          addExprToFrame node (show counter)
-          return $ "%" ++ show counter
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  counter ++ " = " ++ op' ++ " i32 " ++ l' ++ ", " ++ r']}
+          addExprToFrame node ( counter)
+          return $ "%" ++  counter
     Latte.Abs.Neg p expr -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -916,9 +915,9 @@ instance CompileExpr Latte.Abs.Expr where
         Nothing -> do
           e <- compilerExpr expr
           counter <- getNextVariableAndUpdate
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = sub i32 0, " ++ e] }
-          addExprToFrame node (show counter)
-          return $ "%" ++ show counter
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  counter ++ " = sub i32 0, " ++ e] }
+          addExprToFrame node ( counter)
+          return $ "%" ++  counter
     Latte.Abs.EAnd p l r -> do
       lExpr <- compilerExpr l
       labelCounter <- getNextLabelCounterAndUpdate
@@ -942,9 +941,9 @@ instance CompileExpr Latte.Abs.Expr where
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
       pushLabelToStack endLabel
       resultVar <- getNextVariableAndUpdate
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = phi i1 [ " ++ rExpr ++ ", %" ++ trueLabelToPhi ++ " ], [ 0, %" ++ falseLabelToPhi ++ " ]"] }
-      addExprToFrame node (show resultVar)
-      return $ "%" ++ show resultVar
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  resultVar ++ " = phi i1 [ " ++ rExpr ++ ", %" ++ trueLabelToPhi ++ " ], [ 0, %" ++ falseLabelToPhi ++ " ]"] }
+      addExprToFrame node ( resultVar)
+      return $ "%" ++  resultVar
     Latte.Abs.EOr p l r -> do
       lExpr <- compilerExpr l
       labelCounter <- getNextLabelCounterAndUpdate
@@ -968,9 +967,9 @@ instance CompileExpr Latte.Abs.Expr where
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
       pushLabelToStack endLabel
       resultVar <- getNextVariableAndUpdate
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show resultVar ++ " = phi i1 [ 1, %" ++ trueLabelToPhi ++ " ], [ " ++ rExpr ++ ", %" ++ falseLabelToPhi ++ " ]"] }
-      addExprToFrame node (show resultVar)
-      return $ "%" ++ show resultVar
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  resultVar ++ " = phi i1 [ 1, %" ++ trueLabelToPhi ++ " ], [ " ++ rExpr ++ ", %" ++ falseLabelToPhi ++ " ]"] }
+      addExprToFrame node ( resultVar)
+      return $ "%" ++  resultVar
     Latte.Abs.Not p expr -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -978,10 +977,10 @@ instance CompileExpr Latte.Abs.Expr where
         Nothing -> do
           e <- compilerExpr expr
           counter <- getNextVariableAndUpdate
-          let notInstr = "%" ++ show counter ++ " = xor i1 " ++ e ++ ", 1"
+          let notInstr = "%" ++  counter ++ " = xor i1 " ++ e ++ ", 1"
           modify $ \s -> s { compilerOutput = compilerOutput s ++ [notInstr] }
-          addExprToFrame node (show counter)
-          return $ "%" ++ show counter
+          addExprToFrame node ( counter)
+          return $ "%" ++  counter
     Latte.Abs.ERel p l op r -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -1000,23 +999,23 @@ instance CompileExpr Latte.Abs.Expr where
                 Latte.Abs.NE _ -> "ne"
           case lType of
             Integer -> do
-              let relInstr = "%" ++ show counter ++ " = icmp " ++ relOp ++ " i32 " ++ lExpr ++ ", " ++ rExpr
+              let relInstr = "%" ++  counter ++ " = icmp " ++ relOp ++ " i32 " ++ lExpr ++ ", " ++ rExpr
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [relInstr] }
-              addExprToFrame node (show counter)
-              return $ "%" ++ show counter
+              addExprToFrame node ( counter)
+              return $ "%" ++  counter
             Boolean -> do
-              let relInstr = "%" ++ show counter ++ " = icmp " ++ relOp ++ " i1 " ++ lExpr ++ ", " ++ rExpr
+              let relInstr = "%" ++  counter ++ " = icmp " ++ relOp ++ " i1 " ++ lExpr ++ ", " ++ rExpr
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [relInstr] }
-              addExprToFrame node (show counter)
-              return $ "%" ++ show counter
+              addExprToFrame node ( counter)
+              return $ "%" ++  counter
             String -> do
               nextCounter <- getNextVariableAndUpdate
-              let callStrcmp = "%" ++ show counter ++ " = call i32 @strcmp(i8* " ++ lExpr ++ ", i8* " ++ rExpr ++ ")"
-              let icmpResult = "%" ++ show nextCounter ++ " = icmp " ++ relOp ++ " i32 %" ++ show counter ++ ", 0"
+              let callStrcmp = "%" ++  counter ++ " = call i32 @strcmp(i8* " ++ lExpr ++ ", i8* " ++ rExpr ++ ")"
+              let icmpResult = "%" ++  nextCounter ++ " = icmp " ++ relOp ++ " i32 %" ++  counter ++ ", 0"
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [callStrcmp, icmpResult] }
               modify $ \s -> s { compilerOutput = "declare i32 @strcmp(i8*, i8*)" : compilerOutput s }
-              addExprToFrame node (show nextCounter)
-              return $ "%" ++ show nextCounter
+              addExprToFrame node ( nextCounter)
+              return $ "%" ++  nextCounter
             _ -> throwError $ "Comparison not supported for types: " ++ show lType ++ " and " ++ show r ++ ", at " ++ errLocation p
     Latte.Abs.EVar p ident -> do
       s <- get
@@ -1053,10 +1052,10 @@ instance CompileExpr Latte.Abs.Expr where
                 return ""
               _ -> do
                 counter <- getNextVariableAndUpdate
-                let callInstr = "%" ++ show counter ++ " = " ++ funCall
+                let callInstr = "%" ++  counter ++ " = " ++ funCall
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ [callInstr]}
-                addExprToFrame node (show counter)
-                return $ "%" ++ show counter
+                addExprToFrame node ( counter)
+                return $ "%" ++  counter
 
 
 --COMPILE SECTION
@@ -1127,13 +1126,13 @@ instance Compile Latte.Abs.Stmt where
           case varType of
             String -> do
               emptyStringLabel <- declareEmptyStringIfNotExists
-              let call = "%"++ show counter ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
+              let call = "%"++  counter ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
                     emptyStringLabel ++ ", i32 0, i32 0"
-              addVariableToFrame varName varType (show counter)
+              addVariableToFrame varName varType ( counter)
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
             _ -> do
-              let declToZero = "%" ++ show counter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
-              addVariableToFrame varName varType (show counter)
+              let declToZero = "%" ++  counter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, 0"
+              addVariableToFrame varName varType ( counter)
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [declToZero] }
         Latte.Abs.Init _ ident expr -> do
           let varName = name ident
@@ -1297,7 +1296,7 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       functionsSignatures = functionsSignatures,
       exprTypes = exprTypes,
       inlineFunctions = inlineFunctions,
-      inlineFunctionsReturnStack = [], 
+      inlineFunctionsReturnStack = [],
       inlineFunctionsToken = 0,
       inlineFunctionsLabelsStack = [],
       returnRegisterInsideInlineFunction = "",
