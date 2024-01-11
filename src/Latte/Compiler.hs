@@ -32,7 +32,11 @@ data CompilerState = CompilerState
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     exprTypes :: Map Latte.Abs.Expr Type,
     inlineFunctions :: Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block),
+    inlineFunctionsReturnStack :: [Map String String], -- (nazwa labelki, nazwa rejestru zwracającego wartość)
+    inlineFunctionsToken :: Int,
+    inlineFunctionsLabelsStack :: [String],
     returnRegisterInsideInlineFunction :: String,
+    labelsUsedInReturn :: [String],
     computedExprsStack :: [[(Latte.Abs.Expr, String)]],
     arguments :: Map String Type,
     stringPool :: Map String Int,
@@ -738,15 +742,63 @@ getArgumentRegisters expr = do
       return ("%" ++ show counter)
     _ -> compilerExpr expr
 
+pushInlineFunctionReturnFrame :: LCS ()
+pushInlineFunctionReturnFrame = 
+  modify $ \s -> s { 
+    inlineFunctionsReturnStack = Map.empty : inlineFunctionsReturnStack s,
+    inlineFunctionsToken = inlineFunctionsToken s + 1
+    }
+
+popInlineFunctionReturnFrame :: LCS ()
+popInlineFunctionReturnFrame = modify $ \s -> s {
+  inlineFunctionsReturnStack = case inlineFunctionsReturnStack s of
+      (_:rest) -> rest
+      [] -> [],
+  inlineFunctionsToken = inlineFunctionsToken s - 1
+}
+
+addInlineFunctionReturnToFrame :: String -> String -> LCS ()
+addInlineFunctionReturnToFrame labal reg = modify $ \s ->
+  let (currentFrame:rest) = inlineFunctionsReturnStack s
+  in s { inlineFunctionsReturnStack = Map.insert labal reg currentFrame : rest }
+
+checkIfCodeIsInsideInlineFunction :: LCS Bool
+checkIfCodeIsInsideInlineFunction = do
+  token <- gets inlineFunctionsToken
+  return $ token > 0
+
+findLabelForThisInlineFunction :: LCS String
+findLabelForThisInlineFunction = do
+  labelCouter <- getNextLabelCounterAndUpdate 
+  let label = "inline_function_" ++ show labelCouter
+  modify $ \s -> s { inlineFunctionsLabelsStack = label : inlineFunctionsLabelsStack s }
+  return label
+
+getEndOfActualFunctionLabel :: LCS String
+getEndOfActualFunctionLabel = do
+  stack <- gets inlineFunctionsLabelsStack
+  let label = case stack of
+        (top:_) -> top
+        _ -> error "No label on stack"
+  return label
+
+inlineFunctionCall :: Latte.Abs.Ident -> [String] -> [Type] -> StateT CompilerState (Either CompilerError) String
 inlineFunctionCall ident argsRegisters argsTypes = do
   modify $ \s -> s { returnRegisterInsideInlineFunction = "" }
   pushExprsFrame
   pushVariablesFrame
+  pushInlineFunctionReturnFrame
   let functionName = name ident
   (retType,argsAbs,body) <- getInlineFunctionItems ident argsTypes
   addInlineFunctionArgumentsToFrame argsAbs argsRegisters argsTypes
-  handleBlockOfInlineFunction body
-  gets returnRegisterInsideInlineFunction
+  label <- findLabelForThisInlineFunction
+  compile body
+  pushLabelToStack label
+  register <- handleReturnPhiBlockInInlineFunction retType label
+  popExprsFrame
+  popVariablesFrame
+  popInlineFunctionReturnFrame
+  return register
 
 getInlineFunctionItems :: Latte.Abs.Ident -> [Type] -> StateT      CompilerState      (Either CompilerError)      (Type, [Latte.Abs.Arg], Latte.Abs.Block)
 getInlineFunctionItems ident args = do
@@ -764,27 +816,17 @@ addInlineFunctionArgumentsToFrame functionArgs argsRegisters argsTypes = do
     addVariableToFrame argName argType argsRegistersWithoutPercent
     addPhiNodeToFrame argName argType argsRegistersWithoutPercent
 
-handleBlockOfInlineFunction :: Latte.Abs.Block -> LCS ()
-handleBlockOfInlineFunction (Latte.Abs.Block _ stmts) = do
-  -- Przetwarzanie instrukcji poza return, jeśli napotkasz na return, obsłuż go inaczej niż zwyczajnie
-  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; inline function block: \n;" ++ show stmts ] }
-  mapM_ handleInlineStmt stmts
-
-handleInlineStmt :: Latte.Abs.Stmt -> LCS ()
-handleInlineStmt stmt = case stmt of
-  Latte.Abs.Ret _ expr -> do
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; return " ++ show expr] }
-    handleInlineReturn expr
-  _ -> do
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; compile:  " ++ show stmt] }
-    compile stmt
-
-handleInlineReturn :: Latte.Abs.Expr -> LCS ()
-handleInlineReturn expr = do
-  returnExprValue <- compilerExpr expr
-  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; return " ++ returnExprValue] }
-  modify $ \s -> s { returnRegisterInsideInlineFunction = returnExprValue }
-  return ()
+handleReturnPhiBlockInInlineFunction :: Type -> String -> LCS String
+handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd = do
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ [labelAtTheEnd ++ ":"] }
+  counter <- getNextVariableAndUpdate
+  topFrame <- gets $ \s -> case inlineFunctionsReturnStack s of
+    (frame:_) -> frame
+    _ -> Map.empty
+  let phiEntries = map (\(label, reg) -> "[ " ++ reg ++ ", %" ++ label ++ " ]") $ Map.toList topFrame
+  let phiString = intercalate ", " phiEntries
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ show counter ++ " = phi "++ typeToLlvmKeyword functionType ++ " " ++ phiString] }
+  return ("%" ++ show counter)
 
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
@@ -1131,7 +1173,7 @@ instance Compile Latte.Abs.Stmt where
             returnFlag <- gets returnReached
             phiFrameAfterIf <- gets phiNodesStack
             popPhiNodesFrameAndMergeInIntoStack
-            unless returnFlag $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] } --TODO po co to
+            unless returnFlag $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
             lastLabel <- getTopLabel
             pushLabelToStack endLabel
@@ -1207,12 +1249,34 @@ instance Compile Latte.Abs.Stmt where
         removeExprsWithVarFromAllFrames (name ident)
         commonDecrIncrOperation ident "sub"
       Latte.Abs.Ret p expr -> do
-        e <- compilerExpr expr
-        exprWithType <- combineTypeAndIndentOfExpr expr e
-        let returnText = "ret" ++ " " ++ exprWithType
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText],
-                          returnReached = True }
-      Latte.Abs.VRet p -> modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
+        insideInlineFuncion <- checkIfCodeIsInsideInlineFunction
+        if insideInlineFuncion then do
+            topLabel <- getTopLabel
+            labelsUsedInReturn <- gets labelsUsedInReturn
+            let isLabelUsed = topLabel `elem` labelsUsedInReturn
+            if isLabelUsed then do
+              labelCounter <- getNextLabelCounterAndUpdate
+              let label = "inline_return_" ++ show labelCounter
+              pushLabelToStack label
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [label++ ":"] }
+              e <- compilerExpr expr
+              addInlineFunctionReturnToFrame label e
+            else do
+              modify $ \s -> s { labelsUsedInReturn = topLabel : labelsUsedInReturn }
+              e <- compilerExpr expr
+              addInlineFunctionReturnToFrame topLabel e
+            endOfFunctionLabel <- getEndOfActualFunctionLabel
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel] }
+            return ()
+          else do
+            e <- compilerExpr expr
+            exprWithType <- combineTypeAndIndentOfExpr expr e
+            let returnText = "ret" ++ " " ++ exprWithType
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText],
+                              returnReached = True }
+      Latte.Abs.VRet p -> do
+
+         modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
                         returnReached = True }
       Latte.Abs.SExp _ expr -> do
         compilerExpr expr
@@ -1233,7 +1297,11 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       functionsSignatures = functionsSignatures,
       exprTypes = exprTypes,
       inlineFunctions = inlineFunctions,
+      inlineFunctionsReturnStack = [], 
+      inlineFunctionsToken = 0,
+      inlineFunctionsLabelsStack = [],
       returnRegisterInsideInlineFunction = "",
+      labelsUsedInReturn = [],
       computedExprsStack = [],
       arguments = Map.empty,
       stringPool = Map.empty,

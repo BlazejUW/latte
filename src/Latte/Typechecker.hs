@@ -80,27 +80,27 @@ checkIfFunctionIsInline t ident args body = do
     return True
   else return False
 
-collectStmtsUntilReturn :: [Latte.Abs.Stmt] -> LTS [Latte.Abs.Stmt]
-collectStmtsUntilReturn stmts = go stmts []
-  where
-    go [] acc = return (reverse acc)
-    go (s:ss) acc = do
-      typecheck s
-      returnFlagAfterStmt <- gets returnReachable
-      if returnFlagAfterStmt
-        then return (reverse (s:acc))
-        else go ss (s:acc)   
+-- collectStmtsUntilReturn :: [Latte.Abs.Stmt] -> LTS [Latte.Abs.Stmt]
+-- collectStmtsUntilReturn stmts = go stmts []
+--   where
+--     go [] acc = return (reverse acc)
+--     go (s:ss) acc = do
+--       typecheck s
+--       returnFlagAfterStmt <- gets returnReachable
+--       if returnFlagAfterStmt
+--         then return (reverse (s:acc))
+--         else go ss (s:acc)   
 
-processFunctionBodyForInlining :: Latte.Abs.Block -> LTS Latte.Abs.Block
-processFunctionBodyForInlining (Latte.Abs.Block pos stmts) = do
-  original <- get
-  newStmts <- collectStmtsUntilReturn stmts
-  put original
-  return (Latte.Abs.Block pos newStmts)
+-- processFunctionBodyForInlining :: Latte.Abs.Block -> LTS Latte.Abs.Block
+-- processFunctionBodyForInlining (Latte.Abs.Block pos stmts) = do
+--   original <- get
+--   newStmts <- collectStmtsUntilReturn stmts
+--   put original
+--   return (Latte.Abs.Block pos newStmts)
 
 updateFunctionForInlining :: Latte.Abs.Ident -> [Latte.Abs.Arg] -> Type -> Latte.Abs.Block -> LTS ()
 updateFunctionForInlining ident args returnType body = do
-  newBody <- processFunctionBodyForInlining body
+  -- newBody <- processFunctionBodyForInlining body
   let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
   -- modify $ \s -> s {inlineFunctions = Map.insert (ident, argTypes) (returnType, args, newBody) (inlineFunctions s)}
   modify $ \s -> s {inlineFunctions = Map.insert (ident, argTypes) (returnType, args, body) (inlineFunctions s)}
