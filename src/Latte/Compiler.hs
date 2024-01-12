@@ -36,7 +36,7 @@ data CompilerState = CompilerState
     inlineFunctionsReturnStack :: [Map String String], -- (nazwa labelki, nazwa rejestru zwracającego wartość)
     inlineFunctionsToken :: Int,
     inlineFunctionsLabelsStack :: [String],
-    returnRegisterInsideInlineFunction :: String,
+    actualInlineFunctionType :: Type,
     labelsUsedInReturn :: [String],
     computedExprsStack :: [[(Latte.Abs.Expr, String)]],
     arguments :: Map String Type,
@@ -46,7 +46,8 @@ data CompilerState = CompilerState
     phiNodesStack :: [Map String (Type,String)],
     labelsStack :: [String],
     inductionVariablesStack :: [Map String Bool], -- (nazwa, typ, czy jest zmienną indukcyjną)
-    tokenWhile :: Int
+    tokenWhile :: Int,
+    isBrLastStmt :: Bool
   }
   deriving (Eq, Ord, Show)
 
@@ -89,6 +90,24 @@ lookupVariable varName = gets $ \s ->
 isFunctionInline :: (Latte.Abs.Ident, [Type]) -> LCS Bool
 isFunctionInline function = do
   gets (Map.member function . inlineFunctions)
+
+putDummyRegister :: LCS String
+putDummyRegister = do
+  returnType <- gets actualInlineFunctionType
+  if (returnType == Void) then return ""
+  else do
+    counter <- getNextVariableAndUpdate
+    let dummyRegister = "%" ++ counter ++ "_dummy"
+    case returnType of
+      String -> do
+        emptyStringLabel <- declareEmptyStringIfNotExists
+        let call = dummyRegister ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
+              emptyStringLabel ++ ", i32 0, i32 0"
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
+      _ -> do
+        let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
+    return dummyRegister
 
 pushExprsFrame :: LCS ()
 pushExprsFrame = modify $ \s -> s { computedExprsStack = [] : computedExprsStack s }
@@ -216,6 +235,10 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
       return ()
     else do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+      isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+      when isItInInlineFunction $ do
+        dummy <- putDummyRegister
+        addInlineFunctionReturnToFrame endLabel dummy
       pushLabelToStack endLabel
 
 updateVariableInStack :: String -> Type -> String -> LCS ()
@@ -783,12 +806,13 @@ getEndOfActualFunctionLabel = do
 
 inlineFunctionCall :: Latte.Abs.Ident -> [String] -> [Type] -> StateT CompilerState (Either CompilerError) String
 inlineFunctionCall ident argsRegisters argsTypes = do
-  modify $ \s -> s { returnRegisterInsideInlineFunction = "" }
   pushExprsFrame
   pushVariablesFrame
   pushInlineFunctionReturnFrame
   let functionName = name ident
   (retType,argsAbs,body) <- getInlineFunctionItems ident argsTypes
+  originalType <- gets actualInlineFunctionType
+  modify $ \s -> s { actualInlineFunctionType = retType }
   addInlineFunctionArgumentsToFrame argsAbs argsRegisters argsTypes
   label <- findLabelForThisInlineFunction
   compile body
@@ -797,6 +821,7 @@ inlineFunctionCall ident argsRegisters argsTypes = do
   popExprsFrame
   popVariablesFrame
   popInlineFunctionReturnFrame
+  modify $ \s -> s { actualInlineFunctionType = originalType }
   return register
 
 getInlineFunctionItems :: Latte.Abs.Ident -> [Type] -> StateT      CompilerState      (Either CompilerError)      (Type, [Latte.Abs.Arg], Latte.Abs.Block)
@@ -817,15 +842,22 @@ addInlineFunctionArgumentsToFrame functionArgs argsRegisters argsTypes = do
 
 handleReturnPhiBlockInInlineFunction :: Type -> String -> LCS String
 handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd = do
+  isBrLastStmt <- gets isBrLastStmt
+  unless isBrLastStmt $
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ labelAtTheEnd] }
   modify $ \s -> s { compilerOutput = compilerOutput s ++ [labelAtTheEnd ++ ":"] }
   counter <- getNextVariableAndUpdate
   topFrame <- gets $ \s -> case inlineFunctionsReturnStack s of
     (frame:_) -> frame
     _ -> Map.empty
-  let phiEntries = map (\(label, reg) -> "[ " ++ reg ++ ", %" ++ label ++ " ]") $ Map.toList topFrame
-  let phiString = intercalate ", " phiEntries
-  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++  counter ++ " = phi "++ typeToLlvmKeyword functionType ++ " " ++ phiString] }
-  return ("%" ++  counter)
+  case Map.toList topFrame of
+    [] -> return ""
+    [(label, reg)] -> return reg
+    entries -> do
+      let phiEntries = map (\(label, reg) -> "[ " ++ reg ++ ", %" ++ label ++ " ]") entries
+      let phiString = intercalate ", " phiEntries
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ counter ++ " = phi " ++ typeToLlvmKeyword functionType ++ " " ++ phiString] }
+      return ("%" ++ counter)
 
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
@@ -860,8 +892,8 @@ instance CompileExpr Latte.Abs.Expr where
             let declaration = strLabel ++ " = private unnamed_addr constant [" ++ show stringLength ++ " x i8] c\"" ++ llvmString ++ "\""
             modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
           modify $ \s -> s {compilerOutput = compilerOutput s ++ [call]}
-          addExprToFrame node (show nextIndirectVariable)
-          return $ "%" ++ show nextIndirectVariable
+          addExprToFrame node ( nextIndirectVariable)
+          return $ "%" ++  nextIndirectVariable
     Latte.Abs.EAdd p l op r -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -1106,10 +1138,11 @@ instance Compile Latte.Abs.Block where
 
 instance Compile Latte.Abs.Stmt where
   compile stmt = do
+    modify $ \s -> s { isBrLastStmt = False }
     returnFlag <- gets returnReached
     if returnFlag
       then return ()
-      else case stmt of
+    else case stmt of
       Latte.Abs.Empty _ -> return ()
       Latte.Abs.BStmt _ block -> do
         pushExprsFrame
@@ -1172,7 +1205,7 @@ instance Compile Latte.Abs.Stmt where
             returnFlag <- gets returnReached
             phiFrameAfterIf <- gets phiNodesStack
             popPhiNodesFrameAndMergeInIntoStack
-            unless returnFlag $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] } --FIXME
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
             lastLabel <- getTopLabel
             pushLabelToStack endLabel
@@ -1182,7 +1215,19 @@ instance Compile Latte.Abs.Stmt where
               (phiFrameAfter:_) -> do
                 phiBlock <- createPhiBlock framesBeforeIf phiFrameAfter topLabel lastLabel
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
-              _ -> return ()
+                if null phiBlock then do
+                  isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+                  when isItInInlineFunction $ do
+                    dummy <- putDummyRegister
+                    modify $ \s -> s { isBrLastStmt = False }
+                    addInlineFunctionReturnToFrame endLabel dummy
+                else
+                  modify $ \s -> s { isBrLastStmt = False }
+              _ -> do
+                isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+                when isItInInlineFunction $ do
+                  dummy <- putDummyRegister
+                  addInlineFunctionReturnToFrame endLabel dummy
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
         case expr of
@@ -1227,6 +1272,11 @@ instance Compile Latte.Abs.Stmt where
             unless (returnFlag1 && returnFlag2) $ do
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+              isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+              when isItInInlineFunction $ do
+                dummy <- putDummyRegister
+                modify $ \s -> s { isBrLastStmt = False }
+                addInlineFunctionReturnToFrame endLabel dummy
               phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
               modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
               pushLabelToStack endLabel
@@ -1266,6 +1316,7 @@ instance Compile Latte.Abs.Stmt where
               addInlineFunctionReturnToFrame topLabel e
             endOfFunctionLabel <- getEndOfActualFunctionLabel
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel] }
+            modify $ \s -> s { isBrLastStmt = True }
             return ()
           else do
             e <- compilerExpr expr
@@ -1299,7 +1350,7 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       inlineFunctionsReturnStack = [],
       inlineFunctionsToken = 0,
       inlineFunctionsLabelsStack = [],
-      returnRegisterInsideInlineFunction = "",
+      actualInlineFunctionType = Void,
       labelsUsedInReturn = [],
       computedExprsStack = [],
       arguments = Map.empty,
@@ -1309,7 +1360,8 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       phiNodesStack = [],
       labelsStack = [],
       inductionVariablesStack = [],
-      tokenWhile = 0
+      tokenWhile = 0,
+      isBrLastStmt = False
     }
     predefFunctions =
       [

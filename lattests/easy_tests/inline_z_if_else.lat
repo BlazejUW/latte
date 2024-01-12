@@ -1,11 +1,11 @@
 int main(){
     int a  = 3;
     string s = "test";
-    printString(inline_test(a,s));
+    printString(inline__test(a,s));
     return 0;
 }
 
-string inline_test(int i, string a){
+string inline__test(int i, string a){
     if(i == 2){
         return a;
     }
