@@ -26,6 +26,11 @@ Aby uruchomić kompilator należy:
 * użyć polecenia `make` w katalogu głównym projektu. W wyniku jego działania powstaje plik wykonywalny latc
 * użyć polecenia `./latc nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku powodzenia na standardowe wyjście zostanie wypisany kod LLVM.
 * użyć polecenia `./latc_llvm nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku działania tego polecenia powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
+* dodatkowo, dodałem flagę `-no_inline`, która wyłącza inlining funkcji. Dzięki temu można sprawdzić, czy program działa poprawnie bez inliningu. W tym celu należy użyć polecenia `./latc -no_inline nazwa_pliku.lat`, dzięki czemu na standardowe wyjście zostanie wypisany kod LLVM bez inliningu funkcji. Żeby przetestować ten kod można użyć komendy:
+```
+./latc -no_inline nazwa_pliku.lat | llvm-link -S ./lib/runtime.bc - | lli
+```
+To polecenie sprawia, że kod LLVM jest podlinkowany z runtime.bc i uruchamiany za pomocą lli.
 
 ### Struktura Projektu:
 1. Katalog `src/Latte`: Główny katalog zawierający kod źródłowy kompilatora. W tym katalogu znajdują się wszystkie niezbędne moduły Haskell, takie jak moduł analizy składniowej (Abs.hs), lekser (Lex.hs), parser (Par.hs), moduł drukujący (Print.hs), moduł pomocniczy (Helpers.hs). Zamieszczam te pakiety jako źródłowe, gdyż na serwerze students używane przeze mnie w projekcie polecenie bnfc nie działa prawidłowo. Z tego względu dołączam pliki wygenreowane przez bnfc. W tym katalogu znajdują się także moduły Compiler.hs, Typechecker.hs i RunCompile.hs:
