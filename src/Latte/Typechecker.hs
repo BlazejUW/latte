@@ -17,22 +17,27 @@ import Data.Maybe (isJust)
 import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword)
 import Data.Void (Void)
+import Data.List (nub)
 
 data TypecheckerState = TypecheckerState
   {
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     inlineFunctions :: Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block),
+    functionsGraph :: Map (Latte.Abs.Ident, [Type]) [(Latte.Abs.Ident, [Type])],
     variablesStack :: [Map Latte.Abs.Ident Type],
     expectedReturnType :: Maybe Type,
     returnReachable :: Bool,
     exprTypes :: Map Latte.Abs.Expr Type,
     arguments :: Map Latte.Abs.Ident Type,
     isCurrentFunctionInline :: Bool,
-    currentFunctionName :: Latte.Abs.Ident
+    currentFunction :: (Latte.Abs.Ident, [Type])
   }
   deriving (Eq, Ord, Show)
 
 type LTS a = StateT TypecheckerState (Either String) a
+
+--FUNCTIONS
+
 checkTypes :: (MonadError [Char] f, Show a1, Show a2) => [Char] -> Maybe (a1, a2) -> Type -> Type -> f ()
 checkTypes ident p l r = unless (l == r) $ throwError $ "Type mismatch for " ++
                  ident ++ " - left (" ++ typeToKeyword l ++ ") and right (" ++
@@ -66,6 +71,11 @@ lookupVariableInCurrentFrame ident = gets $ \s ->
   let (currentFrame:rest) = variablesStack s
   in Map.lookup ident currentFrame
 
+getCurrentfunctionName :: LTS String
+getCurrentfunctionName = do
+  (ident, _) <- gets currentFunction
+  return $ name ident
+
 checkIfFunctionIsInline :: Latte.Abs.Type' Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> [Latte.Abs.Arg' Latte.Abs.BNFC'Position] -> Latte.Abs.Block -> StateT TypecheckerState (Either String) Bool
 checkIfFunctionIsInline t ident args body = do
   let name = Latte.Helpers.name ident
@@ -87,7 +97,6 @@ updateFunctionForInlining ident args returnType body = do
   -- modify $ \s -> s {inlineFunctions = Map.insert (ident, argTypes) (returnType, args, newBody) (inlineFunctions s)}
   modify $ \s -> s {inlineFunctions = Map.insert (ident, argTypes) (returnType, args, body) (inlineFunctions s)}
 
-
 isPredefFunction :: Latte.Abs.Ident -> Bool
 isPredefFunction ident = do
   Map.member ident predefFunctions
@@ -100,10 +109,72 @@ isPredefFunction ident = do
       , ((Latte.Abs.Ident "readString"), Latte.Helpers.String)
       ]
 
+collectFunctionSignatures :: Latte.Abs.TopDef -> LTS ()
+collectFunctionSignatures (Latte.Abs.FnDef _ t ident args _) = do
+  let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+  let returnType = keywordToType t
+  modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
+
+typecheckDecrIncr :: (Show a1, Show a2) => Maybe (a1, a2) -> Latte.Abs.Ident -> StateT TypecheckerState (Either String) ()
+typecheckDecrIncr p ident = do
+  s <- get
+  localVar <- lookupVariable ident
+  case localVar of
+    Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
+    Just type_ -> do
+      case type_ of
+        Integer -> return ()
+        other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
+
+addEdgeToFunctionsGraph :: (Latte.Abs.Ident, [Type]) -> (Latte.Abs.Ident, [Type]) -> LTS ()
+addEdgeToFunctionsGraph from to = do
+  fromNodeInGraph <- gets $ \s -> Map.lookup from (functionsGraph s)
+  case fromNodeInGraph of
+    Nothing -> modify $ \s -> s {
+      functionsGraph = Map.insert from [(to)] (functionsGraph s)
+    }
+    Just nodes -> do
+      let nodes' = if to `elem` nodes then nodes else to : nodes
+      modify $ \s -> s {
+        functionsGraph = Map.insert from nodes' (functionsGraph s)
+      }
+
+-- dfsAllCycles :: Map (Latte.Abs.Ident, [Type]) [(Latte.Abs.Ident, [Type])]
+--             -> (Latte.Abs.Ident, [Type])
+--             -> Set.Set (Latte.Abs.Ident, [Type])
+--             -> Set.Set (Latte.Abs.Ident, [Type])
+--             -> [[(Latte.Abs.Ident, [Type])]]
+--             -> ([[[(Latte.Abs.Ident, [Type])]]], Set.Set (Latte.Abs.Ident, [Type]))
+-- dfsAllCycles functionsGraph current visited stack acc
+--   | Set.member current stack = ([current : takeWhile (/= current) (Set.toList stack)], visited) : acc
+--   | Set.member current visited = (acc, visited)
+--   | otherwise =
+--       let stack' = Set.insert current stack
+--           visited' = Set.insert current visited
+--           (cycles, newVisited) = foldl (foldFn functionsGraph current visited' stack') ([], visited') (Map.findWithDefault [] current functionsGraph)
+--       in (cycles, newVisited)
+--   where
+--     foldFn graph cur vis stk (cyclesAcc, visitedAcc) edge =
+--       let (foundCycles, newVisited) = dfsAllCycles graph edge vis stk cyclesAcc
+--       in (foundCycles, Set.union visitedAcc newVisited)
+
+-- -- Funkcja wykrywająca wszystkie cykle
+-- detectAllCycles :: Map (Latte.Abs.Ident, [Type]) [(Latte.Abs.Ident, [Type])]
+--                -> [[(Latte.Abs.Ident, [Type])]]
+-- detectAllCycles functionsGraph = fst $ foldl foldFn ([], Set.empty) (Map.keys functionsGraph)
+--   where
+--     foldFn (acc, visited) node =
+--       let (foundCycles, newVisited) = dfsAllCycles functionsGraph node visited Set.empty []
+--       in (acc ++ concat foundCycles, newVisited)
+
+
+
+--EXPR TYPECHECKING
 class TypecheckExpr a where
   typecheckExpr :: a -> LTS Type
 
 instance TypecheckExpr Latte.Abs.Expr where
+  typecheckExpr :: Latte.Abs.Expr -> LTS Type
   typecheckExpr node = case node of
     Latte.Abs.ELitInt _ _ -> do
       modify $ \s -> s {exprTypes = Map.insert node Integer (exprTypes s)}
@@ -180,27 +251,21 @@ instance TypecheckExpr Latte.Abs.Expr where
         _ -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       s <- get
-      isInline <- gets isCurrentFunctionInline
-      when (isInline && not (isPredefFunction ident)) $ do
-        currentFunctionName <- gets currentFunctionName
-        throwError $ "Inline function " ++ name currentFunctionName ++ " cannot call other functions: " ++ name ident ++ " " ++ errLocation p
       types <- mapM typecheckExpr exprs
       let key = (ident, types)
+      unless (isPredefFunction ident) $ do
+        addEdgeToFunctionsGraph (currentFunction s) key
+        -- currentFunctionName <- getCurrentfunctionName
+        -- throwError $ "Inline function " ++ currentFunctionName ++ " cannot call other functions: " ++ name ident ++ " " ++ errLocation p
       case Map.lookup key (functionsSignatures s) of
         Nothing -> throwError $ "Function " ++ functionName key ++ " not found " ++ errLocation p
         Just t-> do
           modify $ \s -> s {exprTypes = Map.insert node t (exprTypes s)}
           return t
 
+--STATEMENTS TYPECHECKING
 class Typecheck a where
   typecheck :: a -> LTS ()
-
-collectFunctionSignatures :: Latte.Abs.TopDef -> LTS ()
-collectFunctionSignatures (Latte.Abs.FnDef _ t ident args _) = do
-  let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
-  let returnType = keywordToType t
-  modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
-
 
 instance Typecheck Latte.Abs.Program where
   typecheck (Latte.Abs.Program p topdefs) = do
@@ -217,7 +282,7 @@ instance Typecheck Latte.Abs.TopDef where
     isInline <- checkIfFunctionIsInline t ident args block
     modify $ \s -> s {isCurrentFunctionInline = isInline}
     modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
-    modify $ \s -> s {currentFunctionName = ident}
+    modify $ \s -> s {currentFunction = (ident, argTypes)}
     pushFrame
     forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> do
       addVariableToFrame ident (keywordToType type_)
@@ -275,12 +340,12 @@ instance Typecheck Latte.Abs.Stmt where
             Latte.Abs.ELitTrue _ -> do
               typecheck stmt
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState, functionsGraph = functionsGraph currentState}
               modify $ \s -> s {returnReachable = returnReachable currentState}
             _ -> do
               typecheck stmt
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.CondElse p expr stmt1 stmt2 -> do
       t <- typecheckExpr expr
@@ -295,27 +360,27 @@ instance Typecheck Latte.Abs.Stmt where
               ifReturnReached <- gets returnReachable
               typecheck stmt2
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
               modify $ \s -> s {returnReachable = ifReturnReached || originalReachable}
             Latte.Abs.ELitFalse _ -> do
               typecheck stmt1
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
               typecheck stmt2
               elseReturnReached <- gets returnReachable
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
               modify $ \s -> s {returnReachable = elseReturnReached || originalReachable}
             _ -> do
               typecheck stmt1
               ifReturnReached1 <- gets returnReachable
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
               modify $ \s -> s {returnReachable = False}
               typecheck stmt2
               ifReturnReached2 <- gets returnReachable
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
               modify $ \s -> s {returnReachable = (ifReturnReached1 && ifReturnReached2) || originalReachable}
         other -> throwError $ "Type mismatch for if condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.While p expr stmt -> do
@@ -327,11 +392,11 @@ instance Typecheck Latte.Abs.Stmt where
           case expr of
             Latte.Abs.ELitTrue _ -> do
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
               modify $ \s -> s {returnReachable = returnReachable currentState}
             _ -> do
               currentState <- get
-              put $ originalState { exprTypes = exprTypes currentState }
+              put $ originalState { exprTypes = exprTypes currentState , functionsGraph = functionsGraph currentState}
         other -> throwError $ "Type mismatch for while condition (expected boolean but got " ++ typeToKeyword other ++ ") " ++ errLocation p
     Latte.Abs.Incr p ident -> typecheckDecrIncr p ident
     Latte.Abs.Decr p ident -> typecheckDecrIncr p ident
@@ -355,16 +420,7 @@ instance Typecheck Latte.Abs.Stmt where
       typecheckExpr expr
       return ()
 
--- common typecheck for Decr. and Incr.
-typecheckDecrIncr p ident = do
-  s <- get
-  localVar <- lookupVariable ident
-  case localVar of
-    Nothing -> throwError $ "Variable " ++ name ident ++ " not found " ++ errLocation p
-    Just type_ -> do
-      case type_ of
-        Integer -> return ()
-        other -> throwError $ "Type mismatch for increment (expected integer but got " ++ typeToKeyword other ++ ") " ++ errLocation p
+
 
 runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
 runTypechecker program = execStateT (typecheck program) initialState
@@ -372,13 +428,14 @@ runTypechecker program = execStateT (typecheck program) initialState
     initialState = TypecheckerState
       { functionsSignatures = predefFunctions
       , inlineFunctions = Map.empty
+      , functionsGraph = Map.empty
       , variablesStack = [Map.empty]
       , expectedReturnType = Nothing
       , returnReachable = False
       , exprTypes = Map.empty
       , arguments = Map.empty
       , isCurrentFunctionInline = False
-      , currentFunctionName = Latte.Abs.Ident ""
+      , currentFunction = (Latte.Abs.Ident "", [])
       }
 
     predefFunctions = Map.fromList
