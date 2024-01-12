@@ -2,23 +2,23 @@
 
 int main() {
   printString("&&");
-  printBool(test(-1) && test(0));
-  printBool(test(-2) && test(1));
-  printBool(test(3) && test(-5));
-  printBool(test(234234) && test(21321));
+  inline__printBool(inline__test(-1) && inline__test(0));
+  inline__printBool(inline__test(-2) && inline__test(1));
+  inline__printBool(inline__test(3) && inline__test(-5));
+  inline__printBool(inline__test(234234) && inline__test(21321));
   printString("||");
-  printBool(test(-1) || test(0));
-  printBool(test(-2) || test(1));
-  printBool(test(3) || test(-5));
-  printBool(test(234234) || test(21321));
+  inline__printBool(inline__test(-1) || inline__test(0));
+  inline__printBool(inline__test(-2) || inline__test(1));
+  inline__printBool(inline__test(3) || inline__test(-5));
+  inline__printBool(inline__test(234234) || inline__test(21321));
   printString("!");
-  printBool(true);
-  printBool(false);
+  inline__printBool(true);
+  inline__printBool(false);
   return 0 ;
 
 }
 
-void printBool(boolean b) {
+void inline__printBool(boolean b) {
   if (!b) {
     printString("false");
   } else {
@@ -27,7 +27,7 @@ void printBool(boolean b) {
  return;
 }
 
-boolean test(int i) {
+boolean inline__test(int i) {
   printInt(i);
   return i > 0;
 }

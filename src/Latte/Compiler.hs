@@ -754,12 +754,12 @@ getArgumentRegisters expr = do
       return ("%" ++  counter)
     Latte.Abs.ELitTrue _ -> do
       counter <- getNextVariableAndUpdate
-      let addInstr = "%" ++  counter ++ " = add i32 0, 1"
+      let addInstr = "%" ++  counter ++ " = add i1 0, 1"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
       return ("%" ++  counter)
     Latte.Abs.ELitFalse _ -> do
       counter <- getNextVariableAndUpdate
-      let addInstr = "%" ++  counter ++ " = add i32 0, 0"
+      let addInstr = "%" ++  counter ++ " = add i1 0, 0"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
       return ("%" ++  counter)
     _ -> compilerExpr expr
