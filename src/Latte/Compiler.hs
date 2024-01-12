@@ -1267,6 +1267,7 @@ instance Compile Latte.Abs.Stmt where
             let falseLabel = "if_false_" ++ show counter
             let endLabel = "if_end_" ++ show counter
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
+            isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
             -- true branch
             pushExprsFrame
             pushPhiNodesFrame
@@ -1282,7 +1283,10 @@ instance Compile Latte.Abs.Stmt where
             topLabelAfterTrueBranch <- getTopLabel
             phiFrameAfterTrueBranch <- getTopPhiFrame
             popPhiNodesFrame
-            unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            if isItInInlineFunction then 
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            else
+              unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             -- false branch
             variableStackBeforeFalseBranch <- gets variablesStack
             pushExprsFrame
@@ -1297,18 +1301,24 @@ instance Compile Latte.Abs.Stmt where
             phiFrameAfterFalseBranch <- getTopPhiFrame
             popExprsFrame
             -- end
-            unless (returnFlag1 && returnFlag2) $ do
+            if isItInInlineFunction then do
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-              isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
-              when isItInInlineFunction $ do
-                dummy <- putDummyRegister
-                modify $ \s -> s { isBrLastStmt = False }
-                addInlineFunctionReturnToFrame endLabel dummy
+              dummy <- putDummyRegister
+              modify $ \s -> s { isBrLastStmt = False }
+              addInlineFunctionReturnToFrame endLabel dummy
               phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
               modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
               pushLabelToStack endLabel
               modify $ \s -> s { returnReached = originalReturnFlag}
+            else 
+              unless (returnFlag1 && returnFlag2) $ do
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }  
+                phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+                pushLabelToStack endLabel
+                modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
       Latte.Abs.While p expr stmt -> do
         counter <- getNextLabelCounterAndUpdate
