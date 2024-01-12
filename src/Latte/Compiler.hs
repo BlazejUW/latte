@@ -93,21 +93,22 @@ isFunctionInline function = do
 
 putDummyRegister :: LCS String
 putDummyRegister = do
+  counter <- getNextVariableAndUpdate
+  let dummyRegister = "%" ++ counter ++ "_dummy"
   returnType <- gets actualInlineFunctionType
-  if (returnType == Void) then return ""
-  else do
-    counter <- getNextVariableAndUpdate
-    let dummyRegister = "%" ++ counter ++ "_dummy"
-    case returnType of
-      String -> do
-        emptyStringLabel <- declareEmptyStringIfNotExists
-        let call = dummyRegister ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
-              emptyStringLabel ++ ", i32 0, i32 0"
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
-      _ -> do
-        let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
-    return dummyRegister
+  case returnType of
+    String -> do
+      emptyStringLabel <- declareEmptyStringIfNotExists
+      let call = dummyRegister ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
+            emptyStringLabel ++ ", i32 0, i32 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
+    Void -> do --TODO moze mozna to usunąć
+      let dummyAdd = dummyRegister ++ " = add i1 0, 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd ++ ";dummy add"] }
+    _ -> do
+      let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
+  return dummyRegister
 
 pushExprsFrame :: LCS ()
 pushExprsFrame = modify $ \s -> s { computedExprsStack = [] : computedExprsStack s }
@@ -216,6 +217,7 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     pushExprsFrame
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
+
     pushPhiNodesFrame
     fakeWhileRunAndAddPhiBlock expr stmt counter
     variablesStackAfterFakeLoop <- gets variablesStack
@@ -288,6 +290,9 @@ compareLatteRelOp op1 op2 = case (op1, op2) of
 printArg :: Latte.Abs.Arg -> String
 printArg (Latte.Abs.Arg _ argType ident) =
     typeToLlvmKeyword (keywordToType argType) ++ " %" ++ name ident
+
+getArgsTypesFromFnDef :: [Latte.Abs.Arg] -> [Type]
+getArgsTypesFromFnDef = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType)
 
 isExprEqual :: Latte.Abs.Expr -> Latte.Abs.Expr -> LCS Bool
 isExprEqual expr1 expr2 = case (expr1, expr2) of
@@ -602,7 +607,9 @@ getVariableNameFromStack varName = do
   maybeVar <- lookupVariable varName
   case maybeVar of
     Just (_, llvmVarName) -> return llvmVarName
-    Nothing -> throwError $ "Variable not defined in stack: " ++ varName
+    Nothing -> do
+      s <- get
+      throwError $ "Variable not defined in stack: " ++ varName
 
 
 getTopLabel :: LCS String
@@ -807,6 +814,10 @@ getEndOfActualFunctionLabel = do
 inlineFunctionCall :: Latte.Abs.Ident -> [String] -> [Type] -> StateT CompilerState (Either CompilerError) String
 inlineFunctionCall ident argsRegisters argsTypes = do
   originalReturnFlag <- gets returnReached
+  orifinalExprsFrame <- gets computedExprsStack
+  orifinalVariablesFrame <- gets variablesStack
+  orifinalPhiNodesFrame <- gets phiNodesStack
+  originalInlineFunctionsLabelsStack <- gets inlineFunctionsLabelsStack
   pushExprsFrame
   pushVariablesFrame
   pushInlineFunctionReturnFrame
@@ -819,18 +830,21 @@ inlineFunctionCall ident argsRegisters argsTypes = do
   compile body
   pushLabelToStack label
   if retType == Void then do
+    register <- putDummyRegister
     popLabelFromStack
     popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
-    modify $ \s -> s { actualInlineFunctionType = originalType, returnReached = originalReturnFlag }
-    return ""
+    modify $ \s -> s { actualInlineFunctionType = originalType, returnReached = originalReturnFlag, computedExprsStack = orifinalExprsFrame,
+    variablesStack = orifinalVariablesFrame, phiNodesStack = orifinalPhiNodesFrame, inlineFunctionsLabelsStack = originalInlineFunctionsLabelsStack }
+    return register
   else do
     register <- handleReturnPhiBlockInInlineFunction retType label
     popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
-    modify $ \s -> s { actualInlineFunctionType = originalType, returnReached = originalReturnFlag }
+    modify $ \s -> s { actualInlineFunctionType = originalType, returnReached = originalReturnFlag, computedExprsStack = orifinalExprsFrame,
+    variablesStack = orifinalVariablesFrame, phiNodesStack = orifinalPhiNodesFrame, inlineFunctionsLabelsStack = originalInlineFunctionsLabelsStack }
     return register
 
 getInlineFunctionItems :: Latte.Abs.Ident -> [Type] -> StateT      CompilerState      (Either CompilerError)      (Type, [Latte.Abs.Arg], Latte.Abs.Block)
@@ -1127,34 +1141,39 @@ instance Compile Latte.Abs.Program where
 
 instance Compile Latte.Abs.TopDef where
   compile fndef@(Latte.Abs.FnDef p t ident args block) = do
-    pushVariablesFrame
-    pushExprsFrame
-    let retType = keywordToType t
-    let argsStr = intercalate ", " (map printArg args)
-    forM_ args $ \(Latte.Abs.Arg _ argType ident) -> do
-      let varName = name ident
-      let varType = keywordToType argType
-      addVariableToFrame varName varType varName
+    inlineFunctions <- gets inlineFunctions
+    let argsTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
+    if (Map.member (ident, argsTypes) inlineFunctions) then return ()
+    else do
+      pushVariablesFrame
+      pushExprsFrame
+      let retType = keywordToType t
+      let argsStr = intercalate ", " (map printArg args)
+      forM_ args $ \(Latte.Abs.Arg _ argType ident) -> do
+        let varName = name ident
+        let varType = keywordToType argType
+        addVariableToFrame varName varType varName
+        modify $ \s -> s {
+          arguments = Map.insert varName varType (arguments s)
+        }
+      let funName = name ident
+      let funSignature =  typeToLlvmKeyword retType ++ " @" ++ funName ++ "(" ++ argsStr ++ ")"
+      let funHeader = "define " ++ funSignature
       modify $ \s -> s {
-        arguments = Map.insert varName varType (arguments s)
+        compilerOutput = compilerOutput s ++ [funHeader, "{"] ++ ["entry:"],
+        variablesCounter = 0,
+        returnReached = False,
+        phiNodesStack = []
       }
-    let funName = name ident
-    let funSignature =  typeToLlvmKeyword retType ++ " @" ++ funName ++ "(" ++ argsStr ++ ")"
-    let funHeader = "define " ++ funSignature
-    modify $ \s -> s {
-      compilerOutput = compilerOutput s ++ [funHeader, "{"] ++ ["entry:"],
-      variablesCounter = 0,
-      returnReached = False,
-      phiNodesStack = []
-    }
-    pushLabelToStack "entry"
-    variablesCounter <- gets variablesCounter
-    compile block
-    returnFlag <- gets returnReached
-    when (not returnFlag && retType == Void) $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"], labelsStack = [] }
-    popVariablesFrame
-    popExprsFrame
+      pushLabelToStack "entry"
+      variablesCounter <- gets variablesCounter
+      compile block
+      returnFlag <- gets returnReached
+      when (not returnFlag && retType == Void) $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"]}
+      modify $ \s -> s { labelsStack = [], labelsUsedInReturn = [], variablesStack = [], computedExprsStack = [], phiNodesStack = [] }
+      -- popVariablesFrame
+      -- popExprsFrame
 
 
 instance Compile Latte.Abs.Block where
@@ -1248,14 +1267,14 @@ instance Compile Latte.Abs.Stmt where
                   when isItInInlineFunction $ do
                     dummy <- putDummyRegister
                     modify $ \s -> s { isBrLastStmt = False }
-                    addInlineFunctionReturnToFrame endLabel dummy
+                    when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
                 else
                   modify $ \s -> s { isBrLastStmt = False }
               _ -> do
                 isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
                 when isItInInlineFunction $ do
                   dummy <- putDummyRegister
-                  addInlineFunctionReturnToFrame endLabel dummy
+                  when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
         case expr of
@@ -1283,7 +1302,7 @@ instance Compile Latte.Abs.Stmt where
             topLabelAfterTrueBranch <- getTopLabel
             phiFrameAfterTrueBranch <- getTopPhiFrame
             popPhiNodesFrame
-            if isItInInlineFunction then 
+            if isItInInlineFunction then
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             else
               unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
@@ -1311,10 +1330,10 @@ instance Compile Latte.Abs.Stmt where
               modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
               pushLabelToStack endLabel
               modify $ \s -> s { returnReached = originalReturnFlag}
-            else 
+            else
               unless (returnFlag1 && returnFlag2) $ do
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }  
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
                 phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
                 pushLabelToStack endLabel
@@ -1339,13 +1358,17 @@ instance Compile Latte.Abs.Stmt where
         insideInlineFuncion <- checkIfCodeIsInsideInlineFunction
         if insideInlineFuncion then do
             topLabel <- getTopLabel
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [";topLabel: " ++ topLabel] }
             labelsUsedInReturn <- gets labelsUsedInReturn
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ [";labelsUsedInReturn: " ++ show labelsUsedInReturn] }
             let isLabelUsed = topLabel `elem` labelsUsedInReturn
             if isLabelUsed then do
               labelCounter <- getNextLabelCounterAndUpdate
+              let brInstr = "br label %inline_return_" ++ show labelCounter
               let label = "inline_return_" ++ show labelCounter
+              modify $ \s -> s { labelsUsedInReturn = label : labelsUsedInReturn }
               pushLabelToStack label
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ [label++ ":"] }
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [brInstr, label++ ":"] }
               e <- compilerExpr expr
               addInlineFunctionReturnToFrame label e
             else do
@@ -1353,7 +1376,7 @@ instance Compile Latte.Abs.Stmt where
               e <- compilerExpr expr
               addInlineFunctionReturnToFrame topLabel e
             endOfFunctionLabel <- getEndOfActualFunctionLabel
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel] }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel ++ ";to stad"] }
             modify $ \s -> s { isBrLastStmt = True }
             return ()
         else do
@@ -1366,7 +1389,7 @@ instance Compile Latte.Abs.Stmt where
         itIsInsideInline <- checkIfCodeIsInsideInlineFunction
         if itIsInsideInline then
           modify $ \s -> s { returnReached = True }
-        else 
+        else
          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
                         returnReached = True }
       Latte.Abs.SExp _ expr -> do

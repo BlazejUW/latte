@@ -1,12 +1,12 @@
 /* void expression as statement */
 
 int main() {
-  inline__foo();
+  foo();
   return 0 ;
 
 }
 
-void inline__foo() {
+void foo() {
    printString("foo");
    return;
 }

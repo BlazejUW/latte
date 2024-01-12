@@ -18,6 +18,8 @@ import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword)
 import Data.Void (Void)
 import Data.List (nub)
+import qualified Data.Set as Set
+import GHC.Magic (inline)
 
 data TypecheckerState = TypecheckerState
   {
@@ -37,6 +39,8 @@ data TypecheckerState = TypecheckerState
 type LTS a = StateT TypecheckerState (Either String) a
 
 --FUNCTIONS
+-- Typ alias dla wierzchołka w grafie funkcji
+type FunctionVertex = (Latte.Abs.Ident, [Type])
 
 checkTypes :: (MonadError [Char] f, Show a1, Show a2) => [Char] -> Maybe (a1, a2) -> Type -> Type -> f ()
 checkTypes ident p l r = unless (l == r) $ throwError $ "Type mismatch for " ++
@@ -76,10 +80,14 @@ getCurrentfunctionName = do
   (ident, _) <- gets currentFunction
   return $ name ident
 
-checkIfFunctionIsInline :: Latte.Abs.Type' Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> [Latte.Abs.Arg' Latte.Abs.BNFC'Position] -> Latte.Abs.Block -> StateT TypecheckerState (Either String) Bool
-checkIfFunctionIsInline t ident args body = do
-  let name = Latte.Helpers.name ident
-  if take 8 name == "inline__" then do
+checkIfItIsMain :: Latte.Abs.Ident -> [Latte.Abs.Arg] -> LTS Bool
+checkIfItIsMain ident args = do
+  if name ident == "main" && null args then return True else return False
+
+prepareFunctionToInline :: Latte.Abs.Type' Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> [Latte.Abs.Arg' Latte.Abs.BNFC'Position] -> Latte.Abs.Block -> StateT TypecheckerState (Either String) Bool
+prepareFunctionToInline t ident args body = do
+  isMain <- checkIfItIsMain ident args
+  if not isMain then do
     pushFrame
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     forM_ args $ \(Latte.Abs.Arg _ type_ ident) -> do
@@ -139,34 +147,27 @@ addEdgeToFunctionsGraph from to = do
         functionsGraph = Map.insert from nodes' (functionsGraph s)
       }
 
--- dfsAllCycles :: Map (Latte.Abs.Ident, [Type]) [(Latte.Abs.Ident, [Type])]
---             -> (Latte.Abs.Ident, [Type])
---             -> Set.Set (Latte.Abs.Ident, [Type])
---             -> Set.Set (Latte.Abs.Ident, [Type])
---             -> [[(Latte.Abs.Ident, [Type])]]
---             -> ([[[(Latte.Abs.Ident, [Type])]]], Set.Set (Latte.Abs.Ident, [Type]))
--- dfsAllCycles functionsGraph current visited stack acc
---   | Set.member current stack = ([current : takeWhile (/= current) (Set.toList stack)], visited) : acc
---   | Set.member current visited = (acc, visited)
---   | otherwise =
---       let stack' = Set.insert current stack
---           visited' = Set.insert current visited
---           (cycles, newVisited) = foldl (foldFn functionsGraph current visited' stack') ([], visited') (Map.findWithDefault [] current functionsGraph)
---       in (cycles, newVisited)
---   where
---     foldFn graph cur vis stk (cyclesAcc, visitedAcc) edge =
---       let (foundCycles, newVisited) = dfsAllCycles graph edge vis stk cyclesAcc
---       in (foundCycles, Set.union visitedAcc newVisited)
+findCycles :: Map FunctionVertex [FunctionVertex] -> [[FunctionVertex]]
+findCycles graph = go Set.empty [] (Map.keys graph)
+  where
+    go :: Set.Set FunctionVertex -> [FunctionVertex] -> [FunctionVertex] -> [[FunctionVertex]]
+    go _ _ [] = []
+    go visited stack (v:vs)
+      | v `Set.member` visited = go visited stack vs
+      | otherwise = dfs visited stack v ++ go visited stack vs
 
--- -- Funkcja wykrywająca wszystkie cykle
--- detectAllCycles :: Map (Latte.Abs.Ident, [Type]) [(Latte.Abs.Ident, [Type])]
---                -> [[(Latte.Abs.Ident, [Type])]]
--- detectAllCycles functionsGraph = fst $ foldl foldFn ([], Set.empty) (Map.keys functionsGraph)
---   where
---     foldFn (acc, visited) node =
---       let (foundCycles, newVisited) = dfsAllCycles functionsGraph node visited Set.empty []
---       in (acc ++ concat foundCycles, newVisited)
+    dfs :: Set.Set FunctionVertex -> [FunctionVertex] -> FunctionVertex -> [[FunctionVertex]]
+    dfs visited stack v
+      | v `elem` stack = [reverse $ v : takeWhile (/= v) stack]
+      | otherwise = case Map.lookup v graph of
+          Nothing -> []
+          Just neighbors -> concatMap (dfs (Set.insert v visited) (v:stack)) neighbors
 
+flattenCyclesAndRemoveDuplicates :: [[FunctionVertex]] -> [FunctionVertex]
+flattenCyclesAndRemoveDuplicates cycles = Set.toList $ Set.fromList (concat cycles)
+
+removeCyclicFunctions :: Map FunctionVertex (Type, [Latte.Abs.Arg], Latte.Abs.Block) -> [[FunctionVertex]] -> Map FunctionVertex (Type, [Latte.Abs.Arg], Latte.Abs.Block)
+removeCyclicFunctions graph cycles = foldr Map.delete graph (flattenCyclesAndRemoveDuplicates cycles)
 
 
 --EXPR TYPECHECKING
@@ -274,12 +275,18 @@ instance Typecheck Latte.Abs.Program where
     functions <- gets functionsSignatures
     let key = (Latte.Abs.Ident "main", [])
     when (Map.notMember key functions) $ throwError $ "Function main not found " ++ errLocation p
+    functionsGraph <- gets functionsGraph
+    let cycles = findCycles functionsGraph
+    modify $ \s -> s {inlineFunctions = removeCyclicFunctions (inlineFunctions s) cycles}
+
+
+
 
 instance Typecheck Latte.Abs.TopDef where
   typecheck fndef@(Latte.Abs.FnDef p t ident args block) = do
     let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
     let returnType = keywordToType t
-    isInline <- checkIfFunctionIsInline t ident args block
+    isInline <- prepareFunctionToInline t ident args block
     modify $ \s -> s {isCurrentFunctionInline = isInline}
     modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
     modify $ \s -> s {currentFunction = (ident, argTypes)}

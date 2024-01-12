@@ -8,13 +8,13 @@ int main() {
     printInt(x*y);
     printInt(45/2);
     printInt(78%3);
-    inline__printBool(x-y > x+y);
-    inline__printBool(x/y <= x*y);
+    printBool(x-y > x+y);
+    printBool(x/y <= x*y);
     printString("string"+" "+"concatenation");
     return 0 ;
 }
 
-void inline__printBool(boolean b) {
+void printBool(boolean b) {
   if (b) {
     printString("true");
     return;
