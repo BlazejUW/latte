@@ -93,6 +93,13 @@ isFunctionInline function = do
 
 putDummyRegister :: LCS String
 putDummyRegister = do
+  isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+  if isItInInlineFunction then
+    generateDummyRegister
+  else return ""
+
+generateDummyRegister :: LCS String
+generateDummyRegister = do
   counter <- getNextVariableAndUpdate
   let dummyRegister = "%" ++ counter ++ "_dummy"
   returnType <- gets actualInlineFunctionType
@@ -104,7 +111,7 @@ putDummyRegister = do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
     Void -> do --TODO moze mozna to usunąć
       let dummyAdd = dummyRegister ++ " = add i1 0, 0"
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd ++ ";dummy add"] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
     _ -> do
       let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
@@ -898,6 +905,21 @@ handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd = do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["%" ++ counter ++ " = phi " ++ typeToLlvmKeyword functionType ++ " " ++ phiString] }
       return ("%" ++ counter)
 
+generateBeginOfInlineFunctionComment key argRegisters = do
+  inlineFunctions <- gets inlineFunctions
+  let maybeFunc = Map.lookup key inlineFunctions
+  case maybeFunc of
+    Just (_, args, _) -> do
+      let argNames = map (\(Latte.Abs.Arg _ _ ident) -> Latte.Helpers.name ident) args
+      let argInfo = zipWith (\name reg -> name ++ ": " ++ reg) argNames argRegisters
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Inline function call: " ++ functionName key] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Arguments: " ++ intercalate ", " argInfo] }
+
+generateEndOfInlineFunctionComment key retType reg = do
+  case retType of 
+    Void -> modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName key] }
+    _ ->  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName key ++ ", with result in register " ++ reg] }
+
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
 putMapToStringList m = [k ++ ":" ++ v | (k, (_, v)) <- Map.toList m]
@@ -1110,10 +1132,9 @@ instance CompileExpr Latte.Abs.Expr where
           isFnInline <- isFunctionInline (ident, argTypes)
           if isFnInline then do
             argRegisters <- mapM getArgumentRegisters exprs
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Inline function call: " ++ functionName (ident, argTypes)] }
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Arguments: " ++ intercalate ", " argRegisters] }
+            generateBeginOfInlineFunctionComment (ident, argTypes) argRegisters
             reg <- inlineFunctionCall ident argRegisters argTypes
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName (ident, argTypes) ++ " with result: " ++ show reg] }
+            generateEndOfInlineFunctionComment (ident, argTypes) funType reg
             return reg
           else do
             argExprs <- mapM compilerExpr exprs
@@ -1202,6 +1223,7 @@ instance Compile Latte.Abs.Stmt where
           let varName = name ident
           let varType = keywordToType type_
           counter <- getNextVariableAndUpdate
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration without init: " ++ varName ] }
           case varType of
             String -> do
               emptyStringLabel <- declareEmptyStringIfNotExists
@@ -1217,7 +1239,7 @@ instance Compile Latte.Abs.Stmt where
           let varName = name ident
           let varType = keywordToType type_
           e <- compilerExpr expr
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration with init: " ++ varName ++ " = " ++ e] }
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration with init: " ++ varName ++ " := " ++ e] }
           fakeInitInsteadOfAlloca varName varType e expr False
       Latte.Abs.Ass p ident expr -> do
         s <- get
@@ -1358,9 +1380,7 @@ instance Compile Latte.Abs.Stmt where
         insideInlineFuncion <- checkIfCodeIsInsideInlineFunction
         if insideInlineFuncion then do
             topLabel <- getTopLabel
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ [";topLabel: " ++ topLabel] }
             labelsUsedInReturn <- gets labelsUsedInReturn
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ [";labelsUsedInReturn: " ++ show labelsUsedInReturn] }
             let isLabelUsed = topLabel `elem` labelsUsedInReturn
             if isLabelUsed then do
               labelCounter <- getNextLabelCounterAndUpdate
@@ -1376,8 +1396,7 @@ instance Compile Latte.Abs.Stmt where
               e <- compilerExpr expr
               addInlineFunctionReturnToFrame topLabel e
             endOfFunctionLabel <- getEndOfActualFunctionLabel
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel ++ ";to stad"] }
-            modify $ \s -> s { isBrLastStmt = True }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel], isBrLastStmt = True}
             return ()
         else do
           e <- compilerExpr expr

@@ -7,6 +7,7 @@ import Prelude
   , Either(..)
   , Int, (>)
   , String, (++), concat, unwords, unlines
+  , Bool(..), (&&), (||), not
   , Show, show
   , IO, (>>), (>>=), mapM_, putStrLn, putStr
   , FilePath
@@ -16,6 +17,7 @@ import System.Environment ( getArgs )
 import System.Exit        ( exitFailure, exitWith )
 import Control.Monad      ( when )
 import System.IO
+import Data.Foldable      ( elem )
 
 import qualified Latte.Abs
 import Latte.Abs   ()
@@ -27,19 +29,25 @@ import Latte.Compiler (Compile, runCompiler, compilerOutput, CompilerState)
 
 type Err        = Either String
 type ParseFun a = [Token] -> Err a
+type Inline     = String
 
-runFile :: (Print a, Show a, Compile a, Typecheck a) => ParseFun a -> FilePath -> IO ()
-runFile p f = readFile f >>= run p
+doInlineAllFunctions :: Inline -> Bool
+doInlineAllFunctions s = case s of
+  "inline" -> True
+  _ -> False
 
-run :: (Print a, Show a, Compile a, Typecheck a) => ParseFun a -> String -> IO ()
-run p s =
+runFile :: (Print a, Show a, Compile a, Typecheck a) => Inline -> ParseFun a -> FilePath -> IO ()
+runFile inline p f = readFile f >>= run inline p
+
+run :: (Print a, Show a, Compile a, Typecheck a) => Inline -> ParseFun a -> String -> IO ()
+run inline p s =
   case p ts of
     Left err -> do
       hPutStrLn stderr "ERROR\n"
       hPutStrLn stderr err
       exitFailure
     Right tree  -> do
-      let typecheckResult = runTypechecker tree
+      let typecheckResult = runTypechecker tree (doInlineAllFunctions inline)
       case typecheckResult of
         Left err -> do
           hPutStrLn stderr "ERROR\n"
@@ -67,7 +75,8 @@ usage = do
   putStrLn $ unlines
     [ "usage: Call with one of the following argument combinations:"
     , "  --help          Display this help message."
-    , "  (no arguments)  Parse stdin."
+    , "  (no arguments)  Parse stdin. All not-recursive functions are inlined."
+    , "  -no_inline      Parse stdin. None of function is inlined."
     , "  (files)         Parse content of files."
     ]
 
@@ -76,5 +85,6 @@ main = do
   args <- getArgs
   case args of
     ["--help"] -> usage
-    []         -> getContents >>= run pProgram
-    fs         -> mapM_ (runFile pProgram) fs
+    []         -> getContents >>= run "inline" pProgram
+    "-no_inline":fs -> mapM_ (runFile "no_inline" pProgram) fs
+    fs -> mapM_ (runFile "inline" pProgram) fs

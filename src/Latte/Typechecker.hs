@@ -32,7 +32,8 @@ data TypecheckerState = TypecheckerState
     exprTypes :: Map Latte.Abs.Expr Type,
     arguments :: Map Latte.Abs.Ident Type,
     isCurrentFunctionInline :: Bool,
-    currentFunction :: (Latte.Abs.Ident, [Type])
+    currentFunction :: (Latte.Abs.Ident, [Type]),
+    doInlineFunctions :: Bool
   }
   deriving (Eq, Ord, Show)
 
@@ -254,8 +255,9 @@ instance TypecheckExpr Latte.Abs.Expr where
       s <- get
       types <- mapM typecheckExpr exprs
       let key = (ident, types)
+      doInlineFunctions <- gets doInlineFunctions
       unless (isPredefFunction ident) $ do
-        addEdgeToFunctionsGraph (currentFunction s) key
+        when doInlineFunctions $ addEdgeToFunctionsGraph (currentFunction s) key
         -- currentFunctionName <- getCurrentfunctionName
         -- throwError $ "Inline function " ++ currentFunctionName ++ " cannot call other functions: " ++ name ident ++ " " ++ errLocation p
       case Map.lookup key (functionsSignatures s) of
@@ -305,6 +307,9 @@ instance Typecheck Latte.Abs.TopDef where
     popFrame
     modify $ \s -> s {arguments = Map.empty}
     modify $ \s -> s {expectedReturnType = Nothing}
+    doInlineFunctions <- gets doInlineFunctions
+    unless doInlineFunctions $ do
+      modify $ \s -> s {inlineFunctions = Map.empty}
 
 
 instance Typecheck Latte.Abs.Block where
@@ -429,8 +434,8 @@ instance Typecheck Latte.Abs.Stmt where
 
 
 
-runTypechecker :: (Typecheck a) => a -> Either String TypecheckerState
-runTypechecker program = execStateT (typecheck program) initialState
+runTypechecker :: (Typecheck a) => a -> Bool -> Either String TypecheckerState
+runTypechecker program doInlineFunctions = execStateT (typecheck program) initialState
   where
     initialState = TypecheckerState
       { functionsSignatures = predefFunctions
@@ -443,6 +448,7 @@ runTypechecker program = execStateT (typecheck program) initialState
       , arguments = Map.empty
       , isCurrentFunctionInline = False
       , currentFunction = (Latte.Abs.Ident "", [])
+      , doInlineFunctions = doInlineFunctions
       }
 
     predefFunctions = Map.fromList

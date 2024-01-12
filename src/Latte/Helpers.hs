@@ -7,6 +7,7 @@
 module Latte.Helpers where
 
 import qualified Latte.Abs
+import Data.List (intercalate)
 
 data Type = Integer | String | Boolean | Void deriving (Eq, Ord, Show)
 
@@ -36,7 +37,7 @@ name :: Latte.Abs.Ident -> String
 name (Latte.Abs.Ident s) = s
 
 functionName :: (Latte.Abs.Ident, [Type]) -> String
-functionName (Latte.Abs.Ident s, ts) = s ++ "(" ++ concatMap show ts ++ ")"
+functionName (Latte.Abs.Ident s, ts) = s ++ "(" ++ intercalate ", " (map show ts) ++ ")"
 
 errLocation :: (Show a1, Show a2) => Maybe (a1, a2) -> String
 errLocation p = case p of
