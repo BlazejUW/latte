@@ -442,7 +442,7 @@ declareEmptyStringIfNotExists :: LCS String
 declareEmptyStringIfNotExists = do
   s <- get
   case Map.lookup "" (stringPool s) of
-    Just label -> return (show label)
+    Just label -> return ("@str"++show label)
     Nothing -> do
       stringId <- findOrDeclareString ""
       let strLabel = "@str" ++ show stringId
@@ -749,7 +749,7 @@ getArgumentRegisters expr = do
   case expr of
     Latte.Abs.ELitInt _ val -> do
       counter <- getNextVariableAndUpdate
-      let addInstr = "%" ++  counter ++ " = add i32 0, %" ++ show val
+      let addInstr = "%" ++  counter ++ " = add i32 0, " ++ show val
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
       return ("%" ++  counter)
     Latte.Abs.ELitTrue _ -> do
@@ -806,6 +806,7 @@ getEndOfActualFunctionLabel = do
 
 inlineFunctionCall :: Latte.Abs.Ident -> [String] -> [Type] -> StateT CompilerState (Either CompilerError) String
 inlineFunctionCall ident argsRegisters argsTypes = do
+  originalReturnFlag <- gets returnReached
   pushExprsFrame
   pushVariablesFrame
   pushInlineFunctionReturnFrame
@@ -817,12 +818,20 @@ inlineFunctionCall ident argsRegisters argsTypes = do
   label <- findLabelForThisInlineFunction
   compile body
   pushLabelToStack label
-  register <- handleReturnPhiBlockInInlineFunction retType label
-  popExprsFrame
-  popVariablesFrame
-  popInlineFunctionReturnFrame
-  modify $ \s -> s { actualInlineFunctionType = originalType }
-  return register
+  if retType == Void then do
+    popLabelFromStack
+    popExprsFrame
+    popVariablesFrame
+    popInlineFunctionReturnFrame
+    modify $ \s -> s { actualInlineFunctionType = originalType, returnReached = originalReturnFlag }
+    return ""
+  else do
+    register <- handleReturnPhiBlockInInlineFunction retType label
+    popExprsFrame
+    popVariablesFrame
+    popInlineFunctionReturnFrame
+    modify $ \s -> s { actualInlineFunctionType = originalType, returnReached = originalReturnFlag }
+    return register
 
 getInlineFunctionItems :: Latte.Abs.Ident -> [Type] -> StateT      CompilerState      (Either CompilerError)      (Type, [Latte.Abs.Arg], Latte.Abs.Block)
 getInlineFunctionItems ident args = do
@@ -852,7 +861,23 @@ handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd = do
     _ -> Map.empty
   case Map.toList topFrame of
     [] -> return ""
-    [(label, reg)] -> return reg
+    [(label, reg)] -> do
+      case functionType of
+        String -> do
+          emptyString <- declareEmptyStringIfNotExists
+          nextCounter <- getNextVariableAndUpdate
+          let callOfEmptyString = "%" ++ counter ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++ emptyString ++ ", i32 0, i32 0"
+          let callOfConcat = "%" ++ nextCounter ++ " = call i8* @doNotUseThatNameConcat(i8* " ++ reg ++ ", i8* %" ++ counter ++ ")"
+          concatWasDeclared <- gets concatWasDeclared
+          unless concatWasDeclared $ do
+            modify $ \s -> s { compilerOutput = "declare i8* @doNotUseThatNameConcat(i8*, i8*)" : compilerOutput s }
+            modify $ \s -> s { concatWasDeclared = True }
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [callOfEmptyString, callOfConcat] }
+          return ("%" ++ nextCounter)
+        _ -> do
+          let call = "%" ++ counter ++ " = add " ++ typeToLlvmKeyword functionType ++ " 0, " ++ reg
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
+          return ("%" ++ counter)
     entries -> do
       let phiEntries = map (\(label, reg) -> "[ " ++ reg ++ ", %" ++ label ++ " ]") entries
       let phiString = intercalate ", " phiEntries
@@ -1073,7 +1098,9 @@ instance CompileExpr Latte.Abs.Expr where
             argRegisters <- mapM getArgumentRegisters exprs
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Inline function call: " ++ functionName (ident, argTypes)] }
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Arguments: " ++ intercalate ", " argRegisters] }
-            inlineFunctionCall ident argRegisters argTypes
+            reg <- inlineFunctionCall ident argRegisters argTypes
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName (ident, argTypes) ++ " with result: " ++ show reg] }
+            return reg
           else do
             argExprs <- mapM compilerExpr exprs
             let argsCall = intercalate ", " (zipWith (\ t e -> t ++ " " ++ e) (map typeToLlvmKeyword argTypes) argExprs)
@@ -1171,6 +1198,7 @@ instance Compile Latte.Abs.Stmt where
           let varName = name ident
           let varType = keywordToType type_
           e <- compilerExpr expr
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration with init: " ++ varName ++ " = " ++ e] }
           fakeInitInsteadOfAlloca varName varType e expr False
       Latte.Abs.Ass p ident expr -> do
         s <- get
@@ -1318,14 +1346,17 @@ instance Compile Latte.Abs.Stmt where
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel] }
             modify $ \s -> s { isBrLastStmt = True }
             return ()
-          else do
-            e <- compilerExpr expr
-            exprWithType <- combineTypeAndIndentOfExpr expr e
-            let returnText = "ret" ++ " " ++ exprWithType
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText],
-                              returnReached = True }
+        else do
+          e <- compilerExpr expr
+          exprWithType <- combineTypeAndIndentOfExpr expr e
+          let returnText = "ret" ++ " " ++ exprWithType
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ [returnText],
+                            returnReached = True }
       Latte.Abs.VRet p -> do
-
+        itIsInsideInline <- checkIfCodeIsInsideInlineFunction
+        if itIsInsideInline then
+          modify $ \s -> s { returnReached = True }
+        else 
          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
                         returnReached = True }
       Latte.Abs.SExp _ expr -> do

@@ -1,5 +1,5 @@
 int main() {
-	printInt(fac(10));
+	printInt(inline__fac(10));
 	printInt(rfac(10));
 	printInt(mfac(10));
 	printInt(ifac(10));
@@ -13,13 +13,13 @@ int main() {
 	  }
 	  printInt(r);
 	}
-	printString (repStr("=",60));
+	printString (inline__repStr("=",60));
 	printString ("hello */");
         printString ("/* world") ;
         return 0 ;
 }
 
-int fac(int a) {
+int inline__fac(int a) {
 	int r;
 	int n;
 
@@ -65,7 +65,7 @@ int ifac2f(int l, int h) {
         return ifac2f(l,m) * ifac2f(m+1,h);
 }
 
-string repStr(string s, int n) {
+string inline__repStr(string s, int n) {
   string r = "";
   int i = 0;
   while(i<n) {

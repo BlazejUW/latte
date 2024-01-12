@@ -1,11 +1,11 @@
 // count function parameters as initialized
 
 int main() {
-  printInt(fac(5));
+  printInt(inline__fac(5));
   return 0 ;
 }
 
-int fac (int a) {
+int inline__fac (int a) {
   int r;
   int n;
   r = 1;
