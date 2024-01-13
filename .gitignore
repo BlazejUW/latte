@@ -2,7 +2,8 @@
 *.o
 *.hi
 *.bc
-Latte/RunCompile
+src/Latte/RunCompile
 .DS_Store
 bp385954.tgz
 not_use
+lattests/studenckie/
