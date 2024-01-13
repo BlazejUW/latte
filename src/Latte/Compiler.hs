@@ -473,18 +473,12 @@ popPhiNodesFrameAndMergeInIntoStack = do
     _ -> Map.empty
   stack <- gets phiNodesStack
   case stack of
-    -- Jeśli na stosie jest tylko jedna ramka, zaktualizuj stan stosu
-    -- bez usuwania tej ramki
     [_] -> modify $ \s -> s { phiNodesStack = [topFrame] }
-    -- Jeśli na stosie jest więcej niż jedna ramka
     (_:rest) -> do
-      -- Usuń najwyższą ramkę ze stosu
       popPhiNodesFrame
-      -- Pobierz aktualny stan stosu
       newStack <- gets phiNodesStack
       case newStack of
         (currentTopFrame:rest) -> do
-          -- Połącz ramki i zaktualizuj stan stosu
           let mergedFrame = mergePhiFrames currentTopFrame topFrame
           modify $ \s -> s { phiNodesStack = mergedFrame : rest }
         -- Teoretycznie, ten przypadek nie powinien mieć miejsca,
@@ -594,7 +588,6 @@ handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranc
         regBefore <- getVariableNameFromStack varName
         phiNode <- createPhiNode varName varType regBefore regAfterTrue lastLabelInFalseBranch lastLabelInTrueBranch
         return $ Just phiNode
-
   -- Krok 2: Obsługa pozostałych elementów
   remainingElements <- forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
     -- Sprawdzenie czy element nie został już przetworzony
@@ -604,11 +597,8 @@ handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranc
         regBefore <- getVariableNameFromStack varName
         phiNode <- createPhiNode varName varType regBefore regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
         return $ Just phiNode
-
-  -- Zwracanie wszystkich utworzonych węzłów phi
   return $ catMaybes (commonElements ++ remainingElements)
 
--- Funkcja pomocnicza do pobierania nazwy zmiennej ze stosu
 getVariableNameFromStack :: String -> LCS String
 getVariableNameFromStack varName = do
   maybeVar <- lookupVariable varName
@@ -617,7 +607,6 @@ getVariableNameFromStack varName = do
     Nothing -> do
       s <- get
       throwError $ "Variable not defined in stack: " ++ varName
-
 
 getTopLabel :: LCS String
 getTopLabel = gets $ \s -> case labelsStack s of

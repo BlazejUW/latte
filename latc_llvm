@@ -1,9 +1,7 @@
 #!/bin/bash -e
 
 if [ "$1" == "-no_inline" ]; then
-    # Jeśli pierwszy argument to "no_inline", użyj drugiego argumentu jako nazwy pliku
     output_file_name=$(basename $2 .lat)
-    
     # Uruchomienie latc z opcją "no_inline"
     if ./latc $1 $2 > $output_file_name.ll; then
         llvm-link -S $output_file_name.ll ./lib/runtime.bc | llvm-as -o $output_file_name.bc

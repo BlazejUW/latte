@@ -16,9 +16,13 @@ W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozsze
 * struktury: 2 pkt
 * obiekty: 3 pkt
 * odśmiecanie: 2 pkt
- Suma: 30 pkt
- Cel: 22.3 pkt
- Brakuje do zaliczenia bez egzaminu: 6.3 pkt
+
+Suma: 32 pkt
+
+Cel: 22.3 pkt
+
+Brakuje do zaliczenia bez egzaminu: 3.3 pkt
+
 Cel w drugim terminie: min 10 pkt
 
 ## Uruchamianie
