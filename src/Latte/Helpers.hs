@@ -11,7 +11,7 @@ import Data.List (intercalate)
 
 data Type = Integer | String | Boolean | Void deriving (Eq, Ord, Show)
 
-typeToKeyword :: Type -> String 
+typeToKeyword :: Type -> String
 typeToKeyword = \case
   String -> "string"
   Integer -> "int"
@@ -25,10 +25,10 @@ keywordToType = \case
   Latte.Abs.Bool _ -> Boolean
   Latte.Abs.Void _ -> Void
 
-typeToLlvmKeyword :: Type -> String 
+typeToLlvmKeyword :: Type -> String
 typeToLlvmKeyword = \case
   Integer -> "i32"
-  String -> "i8*" 
+  String -> "i8*"
   Boolean -> "i1"
   Void -> "void"
 
@@ -52,7 +52,31 @@ convertToLlvmChar c = case c of
   '\\' -> "\\5C" -- Backslash
   _    -> [c]
 
+convertELitIntToInt :: Latte.Abs.Expr -> Int
+convertELitIntToInt expr = case expr of
+  Latte.Abs.ELitInt _ i -> fromInteger i
+  Latte.Abs.Neg _ e -> - convertELitIntToInt e
+  Latte.Abs.EAdd _ e1 op e2 -> case op of
+    Latte.Abs.Plus _ -> convertELitIntToInt e1 + convertELitIntToInt e2
+    Latte.Abs.Minus _ -> convertELitIntToInt e1 - convertELitIntToInt e2
+  Latte.Abs.EMul _ e1 op e2 -> case op of
+    Latte.Abs.Times _ -> convertELitIntToInt e1 * convertELitIntToInt e2
+    Latte.Abs.Div _ -> convertELitIntToInt e1 `div` convertELitIntToInt e2
+    Latte.Abs.Mod _ -> convertELitIntToInt e1 `mod` convertELitIntToInt e2
+  _ -> error "convertELitIntToInt: not an integer"
 
+convertListOfStmtToBlockBody :: Latte.Abs.Block -> [Latte.Abs.Stmt] -> Latte.Abs.Block
+convertListOfStmtToBlockBody (Latte.Abs.Block p _) newStmts = Latte.Abs.Block p newStmts
+
+createEAdd :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Integer -> Latte.Abs.Expr
+createEAdd pos ident num =
+    let varExpr = Latte.Abs.EVar pos ident
+        intExpr = Latte.Abs.ELitInt pos num
+        addOp = if num >= 0 then Latte.Abs.Plus pos else Latte.Abs.Minus pos
+    in Latte.Abs.EAdd pos varExpr addOp intExpr
+
+
+getRelOp :: Latte.Abs.RelOp' a -> String
 getRelOp op = case op of
   Latte.Abs.LTH _ -> "slt"
   Latte.Abs.LE _ -> "sle"

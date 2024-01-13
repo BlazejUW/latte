@@ -14,10 +14,11 @@ import Control.Monad (forM, forM_, unless, when, zipWithM)
 import Control.Monad.State (StateT, execStateT, get, gets, modify, put)
 import Data.Map (Map, adjust, delete, insert)
 import qualified Data.Map as Map
-import Data.Maybe (isJust, catMaybes)
+import Data.Maybe (isJust, catMaybes, fromMaybe)
 import Data.List (intercalate)
 import qualified Latte.Abs
-import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, typeToLlvmKeyword, convertToLlvmChar)
+import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword,
+  typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd)
 import Data.Void (Void)
 import qualified Distribution.Simple as Latte
 
@@ -45,7 +46,8 @@ data CompilerState = CompilerState
     concatWasDeclared :: Bool,
     phiNodesStack :: [Map String (Type,String)],
     labelsStack :: [String],
-    inductionVariablesStack :: [Map String Bool], -- (nazwa, typ, czy jest zmienną indukcyjną)
+    inductionVariablesStack :: [Map String (Bool, Int)], -- (nazwa, (czy jest zmienną indukcyjną, const które będziemy dodawać))
+    whileBodyStmtsStack :: [[Latte.Abs.Stmt]],
     tokenWhile :: Int,
     isBrLastStmt :: Bool
   }
@@ -224,7 +226,6 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     pushExprsFrame
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
-
     pushPhiNodesFrame
     fakeWhileRunAndAddPhiBlock expr stmt counter
     variablesStackAfterFakeLoop <- gets variablesStack
@@ -232,6 +233,9 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     e <- compilerExpr expr
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
+    pushInductionVariablesFrame
+    analyzeStmtInLookingForIV stmt
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ show (inductionVariablesStack s)] }
     pushLabelToStack bodyLabel
     compile stmt
     popExprsFrame
@@ -633,119 +637,303 @@ popInductionVariablesFrame = modify $ \s -> s {
       [] -> []
   }
 
-addInductionVariableToFrame :: String -> LCS ()
-addInductionVariableToFrame varName = modify $ \s ->
+addInductionVariableToFrame :: String -> Int -> LCS ()
+addInductionVariableToFrame varName val = modify $ \s ->
   let (currentFrame:rest) = inductionVariablesStack s
-  in s { inductionVariablesStack = Map.insert varName True currentFrame : rest }
+  in s { inductionVariablesStack = Map.insert varName (True, val) currentFrame : rest }
 
 markVariableAsNotInduction :: String -> LCS ()
 markVariableAsNotInduction varName = modify $ \s ->
   let (currentFrame:rest) = inductionVariablesStack s
-  in s { inductionVariablesStack = Map.insert varName False currentFrame : rest }
+  in s { inductionVariablesStack = Map.insert varName (False,0) currentFrame : rest}
 
-getTopInductionVariablesFrame :: LCS (Map String Bool)
+getTopInductionVariablesFrame :: LCS (Map String (Bool, Int))
 getTopInductionVariablesFrame = gets $ \s -> case inductionVariablesStack s of
   (topFrame:_) -> topFrame
   _ -> Map.empty
 
-lookupForInductionVariableInTopFrame :: String -> LCS (Maybe Bool)
+lookupForInductionVariableInTopFrame :: String -> LCS (Maybe (Bool, Int))
 lookupForInductionVariableInTopFrame varName = do
   topFrame <- getTopInductionVariablesFrame
   case Map.lookup varName topFrame of
     Just var -> return $ Just var
     Nothing -> return Nothing
 
-analyzeStmtInLookingForIV :: Latte.Abs.Stmt -> LCS ()
-analyzeStmtInLookingForIV stmt  = case stmt of
+analyzeStmtInLookingForIV :: Latte.Abs.Stmt  -> LCS ()
+analyzeStmtInLookingForIV stmt = do
+  case stmt of
     Latte.Abs.BStmt _ block -> analyzeBlockInLookingForIV  block
-    Latte.Abs.Ass _ ident expr -> analyzeAssignmentInLookingForIV  (name ident) expr
-    Latte.Abs.Incr _ ident -> potentiallyMarkAsInductionVar (name ident)
-    Latte.Abs.Decr _ ident -> potentiallyMarkAsInductionVar (name ident)
-    Latte.Abs.Cond _ _ stms -> analyzeStmtInLookingForIV stmt
-    Latte.Abs.CondElse _ _ stmt1 stmt2 -> do
-      analyzeStmtInLookingForIV stmt1
-      analyzeStmtInLookingForIV stmt2
+    Latte.Abs.Ass _ ident expr -> analyzeAssignmentInLookingForIV  ident expr
+    Latte.Abs.Incr _ ident -> potentiallyMarkAsInductionVar (name ident) 1
+    Latte.Abs.Decr _ ident -> potentiallyMarkAsInductionVar (name ident) (-1)
+    Latte.Abs.Cond _ expr stmt -> do
+      case expr of
+        Latte.Abs.ELitTrue _ -> analyzeStmtInLookingForIV stmt
+        Latte.Abs.ELitFalse _ -> return ()
+        _ -> markAllVarsAsNonInductive stmt
+    Latte.Abs.CondElse _ e1 stmt1 stmt2 -> case e1 of
+        Latte.Abs.ELitTrue _ -> analyzeStmtInLookingForIV stmt1
+        Latte.Abs.ELitFalse _ -> analyzeStmtInLookingForIV stmt2
+        _ -> do
+          markAllVarsAsNonInductive stmt1
+          markAllVarsAsNonInductive stmt2
+    Latte.Abs.While _ expr blockStmt -> case expr of
+        Latte.Abs.ELitFalse _ -> return ()
+        _ -> do 
+          markAllVarsAsNonInductive blockStmt
     _ -> return ()  -- Pominięcie innych typów instrukcji
+    where
+    markAllVarsAsNonInductive :: Latte.Abs.Stmt -> LCS ()
+    markAllVarsAsNonInductive orgStmt = 
+      case orgStmt of
+        Latte.Abs.BStmt _ (Latte.Abs.Block _ stmts)  -> mapM_ markAllVarsAsNonInductive stmts
+        Latte.Abs.Cond _ expr stmt  -> markAllVarsAsNonInductive stmt
+        Latte.Abs.CondElse _ expr stmt1 stmt2  -> do
+          markAllVarsAsNonInductive stmt1
+          markAllVarsAsNonInductive stmt2
+        Latte.Abs.While _ expr stmt  -> markAllVarsAsNonInductive stmt
+        Latte.Abs.Ass _ ident _ -> markVariableAsNotInduction (name ident)
+        Latte.Abs.Incr _ ident -> markVariableAsNotInduction (name ident)
+        Latte.Abs.Decr _ ident -> markVariableAsNotInduction (name ident)
+        _ -> return ()
 
 -- Analiza bloku instrukcji
 analyzeBlockInLookingForIV  :: Latte.Abs.Block  -> LCS ()
 analyzeBlockInLookingForIV  (Latte.Abs.Block _ stmts) = mapM_ analyzeStmtInLookingForIV  stmts
 
 -- Analiza przypisania
-analyzeAssignmentInLookingForIV  :: String -> Latte.Abs.Expr  -> LCS ()
-analyzeAssignmentInLookingForIV  varName expr  = case expr of
-    Latte.Abs.EAdd _ expr1 _ expr2 -> analyzeAddMulExpr varName expr1 expr2
-    Latte.Abs.EMul _ expr1 _ expr2 -> analyzeAddMulExpr varName expr1 expr2
-    Latte.Abs.ELitInt _ _ -> potentiallyMarkAsInductionVar varName
+analyzeAssignmentInLookingForIV  :: Latte.Abs.Ident -> Latte.Abs.Expr -> LCS ()
+analyzeAssignmentInLookingForIV  ident expr  = case expr of
+    -- x = x + c
+    Latte.Abs.EAdd _ expr1 op expr2 ->
+      analyzeAddExpr ident expr1 op expr2
+    -- Latte.Abs.ELitInt _ _ -> potentiallyMarkAsInductionVar (name ident) (convertELitIntToInt expr)
+    --x = x
     Latte.Abs.EVar _ ident -> do
-      isPotentiallyInduction <- analyzeExprForInduction varName expr
+      isPotentiallyInduction <- analyzeExprForInduction ident expr
       if isPotentiallyInduction then
-        potentiallyMarkAsInductionVar varName
+        potentiallyMarkAsInductionVar (name ident) 0
       else do
-        markVariableAsNotInduction varName
-    Latte.Abs.Neg _ expr -> do
-      isPotentiallyInduction <- analyzeExprForInduction varName expr
-      if isPotentiallyInduction then
-        potentiallyMarkAsInductionVar varName
-      else do
-        markVariableAsNotInduction varName
-    _ -> markVariableAsNotInduction varName
+        markVariableAsNotInduction (name ident)
+    _ -> do
+      markVariableAsNotInduction (name ident)
 
--- Analiza dodawania i mnożenia
-analyzeAddMulExpr :: String -> Latte.Abs.Expr -> Latte.Abs.Expr -> LCS ()
-analyzeAddMulExpr varName expr1 expr2 = do
-  results <- mapM (analyzeExprForInduction varName) [expr1, expr2]
-  if and results then
-    potentiallyMarkAsInductionVar varName
-  else
-    markVariableAsNotInduction varName
+-- Analiza dodawania x + c
+analyzeAddExpr :: Latte.Abs.Ident -> Latte.Abs.Expr -> Latte.Abs.AddOp ->Latte.Abs.Expr -> LCS ()
+analyzeAddExpr ident expr1 op expr2 = do
+  isExpr1PotentiallyInduction <- analyzeExprForInduction ident expr1
+  isExpr2PotentiallyInduction <- analyzeExprForInduction ident expr2
+  if isExpr1PotentiallyInduction then do
+    case expr2 of
+      Latte.Abs.EVar _ newIdent -> do
+        if newIdent == ident then 
+          case op of
+            Latte.Abs.Plus _ -> potentiallyMarkAsInductionVar (name ident) (convertELitIntToInt expr1)
+            Latte.Abs.Minus _ -> markVariableAsNotInduction (name ident) --przypadek c - x oznacza, że x nie basic induction variable
+        else markVariableAsNotInduction (name ident)
+      _ -> markVariableAsNotInduction (name ident)
+  else do
+    if isExpr2PotentiallyInduction then do
+      case expr1 of
+        Latte.Abs.EVar _ newIdent -> do
+          isNewIdentInduction <- checkIfThisVarIsInduction (name newIdent)
+          if newIdent == ident then
+            case op of
+              Latte.Abs.Plus _ -> potentiallyMarkAsInductionVar (name ident) (convertELitIntToInt expr2)
+              Latte.Abs.Minus _ -> potentiallyMarkAsInductionVar (name ident) (-(convertELitIntToInt expr2))
+          else markVariableAsNotInduction (name ident)
+        _ -> markVariableAsNotInduction (name ident)
+    else do
+      markVariableAsNotInduction (name ident)
 
-analyzeExprForInduction :: String -> Latte.Abs.Expr -> LCS Bool
-analyzeExprForInduction varName expr = case expr of
-    Latte.Abs.EVar _ ident -> do
-        maybeIndVar <- lookupForInductionVariableInTopFrame (name ident)
-        case maybeIndVar of
-            Just True -> return True
-            _ -> return False
+analyzeExprForInduction :: Latte.Abs.Ident -> Latte.Abs.Expr -> LCS Bool
+analyzeExprForInduction ident expr = case expr of
     Latte.Abs.ELitInt _ _ -> return True
-    Latte.Abs.Neg _ expr -> analyzeExprForInduction varName expr
+    Latte.Abs.Neg _ expr -> analyzeExprForInduction ident expr
     Latte.Abs.EAdd _ expr1 op expr2 -> do
-      res1 <- analyzeExprForInduction varName expr1
-      res2 <- analyzeExprForInduction varName expr2
+      res1 <- analyzeExprForInduction ident expr1
+      res2 <- analyzeExprForInduction ident expr2
       return (res1 && res2)
     Latte.Abs.EMul _ expr1 op expr2 -> do
-      res1 <- analyzeExprForInduction varName expr1
-      res2 <- analyzeExprForInduction varName expr2
+      res1 <- analyzeExprForInduction ident expr1
+      res2 <- analyzeExprForInduction ident expr2
       return (res1 && res2)
     _ -> return False
 
+
+findStmtToSecondAndNextRotationsOfWhile :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
+findStmtToSecondAndNextRotationsOfWhile stmt =
+  case stmt of
+    Latte.Abs.Empty _ -> return Nothing
+    Latte.Abs.BStmt p block -> do
+      listOfStmts <- findStmtsInBlokcToSecondAndNextRotationsOfWhile block
+      let newBlock = convertListOfStmtToBlockBody block (catMaybes listOfStmts)
+      return $ Just $ Latte.Abs.BStmt p newBlock
+    Latte.Abs.Decl p ident e -> processDecl stmt
+    Latte.Abs.Ass p ident e -> do
+      let varName = name ident
+      isIV <- checkIfThisVarIsInduction varName
+      if isIV then return Nothing
+      else do
+        newExpr <- handleMulOpInWhile p ident e
+        return $ Just (Latte.Abs.Ass p ident newExpr)
+    Latte.Abs.Incr _ ident -> do
+      isIV <- checkIfThisVarIsInduction (name ident)
+      if isIV then return Nothing
+      else return $ Just stmt
+    Latte.Abs.Decr _ ident -> do
+      isIV <- checkIfThisVarIsInduction (name ident)
+      if isIV then return Nothing
+      else return $ Just stmt
+    Latte.Abs.Cond _ _ stms -> findStmtToSecondAndNextRotationsOfWhile stmt
+    Latte.Abs.CondElse p e1 stmt1 stmt2 -> do
+      case e1 of
+        Latte.Abs.ELitTrue _ -> findStmtToSecondAndNextRotationsOfWhile stmt1
+        Latte.Abs.ELitFalse _ -> findStmtToSecondAndNextRotationsOfWhile stmt2
+        _ -> do
+          newStmt1 <- findStmtToSecondAndNextRotationsOfWhile stmt1
+          newStmt2 <- findStmtToSecondAndNextRotationsOfWhile stmt2
+          return $ Just $ Latte.Abs.CondElse p e1 (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
+    _ -> return $ Just stmt
+
+findStmtsInBlokcToSecondAndNextRotationsOfWhile  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
+findStmtsInBlokcToSecondAndNextRotationsOfWhile  (Latte.Abs.Block _ stmts) = do
+  mapM findStmtToSecondAndNextRotationsOfWhile stmts
+
+processDecl :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
+processDecl (Latte.Abs.Decl p t items) = do
+    newStmts <- catMaybes <$> mapM processItem items
+    case newStmts of
+      [] -> return Nothing
+      [oneStmt] -> return $ Just oneStmt
+      _ -> return $ Just $ Latte.Abs.BStmt p (Latte.Abs.Block p newStmts)
+  where
+    processItem :: Latte.Abs.Item -> LCS (Maybe Latte.Abs.Stmt)
+    processItem (Latte.Abs.Init pos ident expr) = do
+      newExpr <- handleMulOpInWhile pos ident expr
+      return $ Just (Latte.Abs.Ass pos ident newExpr)
+    processItem _ = return Nothing
+    processDecl _ = return Nothing
+
+
+-- handleMulOpInWhile :: Latte.Abs.Stmt -> LCS (Latte.Abs.Stmt)
+handleMulOpInWhile :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Latte.Abs.Expr -> LCS Latte.Abs.Expr
+handleMulOpInWhile position ident expr = do
+  case expr of
+    Latte.Abs.EMul p e1 op e2-> do
+      e1IsEVar <- checkIfExprIsEVar e1
+      e2IsEVar <- checkIfExprIsEVar e2
+      e1IsInt <- checkIfExprIsInt e1
+      e2IsInt <- checkIfExprIsInt e2
+      if e1IsEVar && e2IsInt then do
+        varName <- takeNameOfEVar e1
+        isIV <- checkIfThisVarIsInduction varName
+        if isIV then do
+          case op of
+            Latte.Abs.Times _ -> do
+              maybeConst <- lookupForInductionVariableInTopFrame varName
+              case maybeConst of
+                Just (_, const) -> do
+                  let newConst = const * (convertELitIntToInt e2)
+                  return (createEAdd position ident (toInteger newConst))
+                Nothing -> return expr
+            _ -> return expr
+        else do
+          return expr
+      else do
+        if e1IsInt && e2IsEVar then do
+          varName <- takeNameOfEVar e2
+          isIV <- checkIfThisVarIsInduction varName
+          if isIV then do
+            case op of
+              Latte.Abs.Times _ -> do
+                maybeConst <- lookupForInductionVariableInTopFrame varName
+                case maybeConst of
+                  Just (_, const) -> do
+                    let newConst = const * (convertELitIntToInt e1)
+                    return (createEAdd position ident (toInteger newConst))
+                  Nothing -> return expr
+              _ -> return expr
+          else do
+            return expr
+        else return expr
+    _ -> return expr
+
+checkIfExprIsEVar :: Latte.Abs.Expr -> LCS Bool
+checkIfExprIsEVar expr = case expr of
+  Latte.Abs.EVar _ _ -> return True
+  _ -> return False
+
+takeNameOfEVar :: Latte.Abs.Expr' a -> LCS (String)
+takeNameOfEVar expr = case expr of
+  Latte.Abs.EVar _ ident -> return $ (name ident)
+  _ -> return ""
+
+checkIfExprIsInt :: Latte.Abs.Expr -> LCS Bool
+checkIfExprIsInt expr = case expr of
+  Latte.Abs.ELitInt _ _ -> return True
+  Latte.Abs.Neg _ expr -> checkIfExprIsInt expr
+  Latte.Abs.EAdd _ expr1 _ expr2 -> do
+    res1 <- checkIfExprIsInt expr1
+    res2 <- checkIfExprIsInt expr2
+    return (res1 && res2)
+  Latte.Abs.EMul _ expr1 _ expr2 -> do
+    res1 <- checkIfExprIsInt expr1
+    res2 <- checkIfExprIsInt expr2
+    return (res1 && res2)
+  _ -> return False
+
+checkIfThisVarIsInduction :: String -> LCS Bool
+checkIfThisVarIsInduction varName = do
+  topFrame <- getTopInductionVariablesFrame
+  case Map.lookup varName topFrame of
+    Just (True, _) -> return True
+    _ -> return False
+
+
 -- Oznaczanie zmiennej jako indukcyjnej
-potentiallyMarkAsInductionVar :: String -> LCS ()
-potentiallyMarkAsInductionVar varName = do
+potentiallyMarkAsInductionVar :: String -> Int -> LCS ()
+potentiallyMarkAsInductionVar varName val = do
   lookupResult <- lookupForInductionVariableInTopFrame varName
   case lookupResult of
-    Just _ -> return ()
+    Just (True, actualVal)  -> addInductionVariableToFrame varName (val + actualVal)
     Nothing -> do
-      addInductionVariableToFrame varName
+      addInductionVariableToFrame varName val
       return ()
+    _ -> return ()
 
-analyzeWhileLoop :: Latte.Abs.Stmt -> LCS () --funkcja odpowiadająca za znalezienie zmiennych indukcyjnych w pętli while
-analyzeWhileLoop stmt = do
-    pushInductionVariablesFrame
-    iterativelyAnalyzeBodyOfWhile stmt
-    popInductionVariablesFrame
+pushWhileBodyStmtsStack :: LCS ()
+pushWhileBodyStmtsStack = modify $ \s -> s { whileBodyStmtsStack = [] : whileBodyStmtsStack s }
 
-iterativelyAnalyzeBodyOfWhile :: Latte.Abs.Stmt -> LCS ()
-iterativelyAnalyzeBodyOfWhile stmt = do
-    previousCount <- countInductionVariables
-    analyzeStmtInLookingForIV stmt
-    newCount <- countInductionVariables
-    unless (newCount == previousCount) $
-        iterativelyAnalyzeBodyOfWhile stmt
+popWhileBodyStmtsStack :: LCS ()
+popWhileBodyStmtsStack = modify $ \s -> s {
+  whileBodyStmtsStack = case whileBodyStmtsStack s of
+      (_:rest) -> rest
+      [] -> []
+  }
 
-countInductionVariables :: LCS Int
-countInductionVariables = do
-    length . filter id . Map.elems <$> getTopInductionVariablesFrame
+addStmtToWhileBodyStmtsFrame :: Latte.Abs.Stmt -> LCS ()
+addStmtToWhileBodyStmtsFrame stmt = modify $ \s ->
+  let (currentFrame:rest) = whileBodyStmtsStack s
+  in s { whileBodyStmtsStack = (currentFrame ++ [stmt]) : rest }
+
+-- analyzeWhileLoop :: Latte.Abs.Stmt -> LCS () --funkcja odpowiadająca za znalezienie zmiennych indukcyjnych w pętli while
+-- analyzeWhileLoop stmt = do
+--     pushInductionVariablesFrame
+--     iterativelyAnalyzeBodyOfWhile stmt
+--     popInductionVariablesFrame
+
+-- iterativelyAnalyzeBodyOfWhile :: Latte.Abs.Stmt -> LCS ()
+-- iterativelyAnalyzeBodyOfWhile stmt = do
+--     previousCount <- countInductionVariables
+--     analyzeStmtInLookingForIV stmt
+--     newCount <- countInductionVariables
+--     unless (newCount == previousCount) $
+--         iterativelyAnalyzeBodyOfWhile stmt
+
+-- countInductionVariables :: LCS Int
+-- countInductionVariables = do
+--     length . filter id . Map.elems <$> getTopInductionVariablesFrame
 
 getArgumentRegisters :: Latte.Abs.Expr -> LCS String
 getArgumentRegisters expr = do
@@ -905,7 +1093,7 @@ generateBeginOfInlineFunctionComment key argRegisters = do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Arguments: " ++ intercalate ", " argInfo] }
 
 generateEndOfInlineFunctionComment key retType reg = do
-  case retType of 
+  case retType of
     Void -> modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName key] }
     _ ->  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName key ++ ", with result in register " ++ reg] }
 
@@ -1433,7 +1621,8 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       labelsStack = [],
       inductionVariablesStack = [],
       tokenWhile = 0,
-      isBrLastStmt = False
+      isBrLastStmt = False,
+      whileBodyStmtsStack = []
     }
     predefFunctions =
       [
