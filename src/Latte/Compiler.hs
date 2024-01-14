@@ -48,8 +48,6 @@ data CompilerState = CompilerState
     labelsStack :: [String],
     inductionVariablesStack :: [Map String (Bool, Int)], -- (nazwa, (czy jest zmienną indukcyjną, const które będziemy dodawać))
     whileBodyStmtsStack :: [[Latte.Abs.Stmt]],
-    blockInsideWhileBodyToken :: Int,
-    fakeBlocksInsideWhileBody :: [Latte.Abs.Stmt],
     tokenWhile :: Int,
     isBrLastStmt :: Bool
   }
@@ -66,7 +64,8 @@ getExpressionType expr = do
   s <- get
   case Map.lookup expr (exprTypes s) of
     Just t -> return t
-    Nothing -> throwError $ "Expression type not found: " ++ show expr
+    Nothing -> do
+      throwError $ "Expression type not found: " ++ show expr
 
 pushVariablesFrame :: LCS ()
 pushVariablesFrame = modify $ \s -> s { variablesStack = Map.empty : variablesStack s }
@@ -219,8 +218,11 @@ isAnyTokenWhileUp = do
   s <- get
   return $ tokenWhile s > 0
 
-commonWhilePart :: Latte.Abs.Expr -> Latte.Abs.Stmt -> String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
-commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
+commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> Latte.Abs.Stmt -> 
+          String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
+commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
+    ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
+    compile ifStmt
     tokenWhileUp
     pushPhiNodesFrame
     originalReturnFlag <- gets returnReached
@@ -235,8 +237,6 @@ commonWhilePart expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     e <- compilerExpr expr
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
-    pushInductionVariablesFrame
-    analyzeStmtInLookingForIV stmt
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ show (inductionVariablesStack s)] }
     pushLabelToStack bodyLabel
     compile stmt
@@ -639,20 +639,6 @@ popInductionVariablesFrame = modify $ \s -> s {
       [] -> []
   }
 
-blockInsideWhileBodyTokenUp :: LCS Int
-blockInsideWhileBodyTokenUp = do
-  s <- get
-  modify $ \s -> s { blockInsideWhileBodyToken = blockInsideWhileBodyToken s + 1 }
-  return $ blockInsideWhileBodyToken s
-
-blockInsideWhileBodyTokenDown :: LCS ()
-blockInsideWhileBodyTokenDown = do
-  modify $ \s -> s { blockInsideWhileBodyToken = blockInsideWhileBodyToken s - 1 }
-
-isThisCodeInAnyBlockInsideWhileBody :: LCS Bool
-isThisCodeInAnyBlockInsideWhileBody = do
-  s <- get
-  return $ blockInsideWhileBodyToken s > 1
 
 addInductionVariableToFrame :: String -> Int -> LCS ()
 addInductionVariableToFrame varName val = modify $ \s ->
@@ -784,66 +770,52 @@ findStmtToSecondAndNextRotationsOfWhile stmt =
   case stmt of
     Latte.Abs.Empty _ -> return Nothing
     Latte.Abs.BStmt p block -> do
-      blockInsideWhileBodyTokenUp
       listOfStmts <- findStmtsInBlokcToSecondAndNextRotationsOfWhile block
       let newBlock = convertListOfStmtToBlockBody block (catMaybes listOfStmts)
-      blockInsideWhileBodyTokenDown
       return $ Just $ Latte.Abs.BStmt p newBlock
-    Latte.Abs.Decl p ident e -> do
-      newBlock <- processDecl stmt
-      case newBlock of
-        Just block -> do
-          let fakeBlock = Latte.Abs.BStmt p (Latte.Abs.Block p block)
-          putBlockToFakeBlocks fakeBlock
-          return $ Just fakeBlock
-        Nothing -> return Nothing
     Latte.Abs.Ass p ident e -> do
       let varName = name ident
       isIV <- checkIfThisVarIsInduction varName
-      if isIV then return Nothing
+      if isIV then return (Just stmt)
       else do
         newExpr <- handleMulOpInWhile p ident e
         return $ Just (Latte.Abs.Ass p ident newExpr)
-    Latte.Abs.Incr _ ident -> do
-      isIV <- checkIfThisVarIsInduction (name ident)
-      if isIV then return Nothing
-      else return $ Just stmt
-    Latte.Abs.Decr _ ident -> do
-      isIV <- checkIfThisVarIsInduction (name ident)
-      if isIV then return Nothing
-      else return $ Just stmt
-    Latte.Abs.Cond _ _ stms -> findStmtToSecondAndNextRotationsOfWhile stmt
+    Latte.Abs.Cond _ expr stms -> do
+      case expr of
+        Latte.Abs.ELitFalse _ -> return Nothing
+        Latte.Abs.ELitTrue _ -> findStmtToSecondAndNextRotationsOfWhile stms
+        _ -> return $ Just stmt
     Latte.Abs.CondElse p e1 stmt1 stmt2 -> do
       case e1 of
         Latte.Abs.ELitTrue _ -> findStmtToSecondAndNextRotationsOfWhile stmt1
         Latte.Abs.ELitFalse _ -> findStmtToSecondAndNextRotationsOfWhile stmt2
-        _ -> do
-          newStmt1 <- findStmtToSecondAndNextRotationsOfWhile stmt1
-          newStmt2 <- findStmtToSecondAndNextRotationsOfWhile stmt2
-          return $ Just $ Latte.Abs.CondElse p e1 (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
+        _ -> return $ Just stmt
+        -- _ -> do
+          -- newStmt1 <- findStmtToSecondAndNextRotationsOfWhile stmt1
+          -- newStmt2 <- findStmtToSecondAndNextRotationsOfWhile stmt2
+          -- return $ Just $ Latte.Abs.CondElse p e1 (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
     _ -> return $ Just stmt
 
 findStmtsInBlokcToSecondAndNextRotationsOfWhile  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
 findStmtsInBlokcToSecondAndNextRotationsOfWhile  (Latte.Abs.Block _ stmts) = do
   mapM findStmtToSecondAndNextRotationsOfWhile stmts
 
---TUTAJ
-processDecl :: Latte.Abs.Stmt -> LCS (Maybe [Latte.Abs.Stmt])
-processDecl (Latte.Abs.Decl p t items) = do
-    insideBlock <- isThisCodeInAnyBlockInsideWhileBody
-    newItems <- mapM (processItem insideBlock) items
-    let filteredItems = catMaybes newItems
-    return $ if null filteredItems then Nothing else Just filteredItems
-  where
-    processItem :: Bool -> Latte.Abs.Item -> LCS (Maybe Latte.Abs.Stmt)
-    processItem isInsideBlock item =
-      case item of
-        Latte.Abs.NoInit _ _ -> return $ if isInsideBlock then Just (Latte.Abs.Decl p t [item]) else Nothing
-        Latte.Abs.Init pos ident expr -> do
-          newExpr <- handleMulOpInWhile pos ident expr
-          let newStmt = Latte.Abs.Ass pos ident newExpr
-          return $ if isInsideBlock then Just (Latte.Abs.Decl p t [Latte.Abs.Init pos ident newExpr]) else Just newStmt --TODO sprawdzic czy jak bedzie while we while to nadal zastępujemy
-processDecl _ = return Nothing
+-- --TUTAJ
+-- processDecl :: Latte.Abs.Stmt -> LCS (Maybe [Latte.Abs.Stmt])
+-- processDecl (Latte.Abs.Decl p t items) = do
+--     newItems <- mapM (processItem insideBlock) items
+--     let filteredItems = catMaybes newItems
+--     return $ if null filteredItems then Nothing else Just filteredItems
+--   where
+--     processItem :: Bool -> Latte.Abs.Item -> LCS (Maybe Latte.Abs.Stmt)
+--     processItem isInsideBlock item =
+--       case item of
+--         Latte.Abs.NoInit _ _ -> return $ if isInsideBlock then Just (Latte.Abs.Decl p t [item]) else Nothing
+--         Latte.Abs.Init pos ident expr -> do
+--           newExpr <- handleMulOpInWhile pos ident expr
+--           let newStmt = Latte.Abs.Ass pos ident newExpr
+--           return $ if isInsideBlock then Just (Latte.Abs.Decl p t [Latte.Abs.Init pos ident newExpr]) else Just newStmt --TODO sprawdzic czy jak bedzie while we while to nadal zastępujemy
+-- processDecl _ = return Nothing
 
 handleMulOpInWhile :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Latte.Abs.Expr -> LCS Latte.Abs.Expr
 handleMulOpInWhile position ident expr = do
@@ -863,7 +835,7 @@ handleMulOpInWhile position ident expr = do
               case maybeConst of
                 Just (_, const) -> do
                   let newConst = const * (convertELitIntToInt e2)
-                  return (createEAdd position ident (toInteger newConst))
+                  createEAddAndAddExprTypeToFrame position ident (toInteger newConst)
                 Nothing -> return expr
             _ -> return expr
         else do
@@ -879,13 +851,21 @@ handleMulOpInWhile position ident expr = do
                 case maybeConst of
                   Just (_, const) -> do
                     let newConst = const * (convertELitIntToInt e1)
-                    return (createEAdd position ident (toInteger newConst))
+                    createEAddAndAddExprTypeToFrame position ident (toInteger newConst)
                   Nothing -> return expr
               _ -> return expr
           else do
             return expr
         else return expr
     _ -> return expr
+
+createEAddAndAddExprTypeToFrame :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Integer -> LCS Latte.Abs.Expr
+createEAddAndAddExprTypeToFrame position ident val = do
+  let newExpr = createEAdd position ident val
+  let newEVar = Latte.Abs.EVar position ident
+  modify $ \s -> s {exprTypes = Map.insert newExpr Integer (exprTypes s)}
+  modify $ \s -> s {exprTypes = Map.insert newEVar Integer (exprTypes s)}
+  return newExpr
 
 checkIfExprIsEVar :: Latte.Abs.Expr -> LCS Bool
 checkIfExprIsEVar expr = case expr of
@@ -918,13 +898,6 @@ checkIfThisVarIsInduction varName = do
     Just (True, _) -> return True
     _ -> return False
 
-putBlockToFakeBlocks :: Latte.Abs.Stmt -> LCS ()
-putBlockToFakeBlocks stmt = modify $ \s -> s { fakeBlocksInsideWhileBody = stmt : fakeBlocksInsideWhileBody s }
-
-checkIfBlockIsInFakeBlocks :: Latte.Abs.Stmt -> LCS Bool
-checkIfBlockIsInFakeBlocks stmt = do
-  gets (elem stmt . fakeBlocksInsideWhileBody)
-
 -- Oznaczanie zmiennej jako indukcyjnej
 potentiallyMarkAsInductionVar :: String -> Int -> LCS ()
 potentiallyMarkAsInductionVar varName val = do
@@ -936,28 +909,10 @@ potentiallyMarkAsInductionVar varName val = do
       return ()
     _ -> return ()
 
-pushWhileBodyStmtsStack :: LCS ()
-pushWhileBodyStmtsStack = modify $ \s -> s { whileBodyStmtsStack = [] : whileBodyStmtsStack s }
-
-popWhileBodyStmtsStack :: LCS ()
-popWhileBodyStmtsStack = modify $ \s -> s {
-  whileBodyStmtsStack = case whileBodyStmtsStack s of
-      (_:rest) -> rest
-      [] -> []
-  }
-
-addStmtToWhileBodyStmtsFrame :: Latte.Abs.Stmt -> LCS ()
-addStmtToWhileBodyStmtsFrame stmt = modify $ \s ->
-  let (currentFrame:rest) = whileBodyStmtsStack s
-  in s { whileBodyStmtsStack = (currentFrame ++ [stmt]) : rest }
-
-composeWhileSecondBody :: Latte.Abs.Stmt -> LCS (Latte.Abs.Stmt)
-composeWhileSecondBody stmt = do
-  newBody <- findStmtToSecondAndNextRotationsOfWhile stmt
-  case newBody of
-    Just newBody -> return newBody
-    Nothing -> return stmt
-
+createFirstWhileRotationAsCond :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> LCS Latte.Abs.Stmt
+createFirstWhileRotationAsCond p expr stmt = do
+  let newStmt = Latte.Abs.Cond p expr stmt
+  return newStmt
 
 getArgumentRegisters :: Latte.Abs.Expr -> LCS String
 getArgumentRegisters expr = do
@@ -1413,18 +1368,12 @@ instance Compile Latte.Abs.Stmt where
     else case stmt of
       Latte.Abs.Empty _ -> return ()
       Latte.Abs.BStmt _ block -> do
-        isFake <- checkIfBlockIsInFakeBlocks stmt
-        if isFake then do
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration(s) (or changed to assignments) inside loop:" ] }
-          compile block
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of declaration(s) inside loop" ] }
-        else do
-          pushExprsFrame
-          pushVariablesFrame
-          modify $ \s -> s { returnReached = False }
-          compile block
-          popVariablesFrame
-          popExprsFrame
+        pushExprsFrame
+        pushVariablesFrame
+        modify $ \s -> s { returnReached = False }
+        compile block
+        popVariablesFrame
+        popExprsFrame
       Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
         Latte.Abs.NoInit _ ident -> do
           let varName = name ident
@@ -1445,8 +1394,8 @@ instance Compile Latte.Abs.Stmt where
         Latte.Abs.Init _ ident expr -> do
           let varName = name ident
           let varType = keywordToType type_
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration with init: " ++ varName] }
           e <- compilerExpr expr
-          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration with init: " ++ varName ++ " := " ++ e] }
           fakeInitInsteadOfAlloca varName varType e expr False
       Latte.Abs.Ass p ident expr -> do
         s <- get
@@ -1569,14 +1518,28 @@ instance Compile Latte.Abs.Stmt where
                 modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
       Latte.Abs.While p expr stmt -> do
+        pushInductionVariablesFrame
         counter <- getNextLabelCounterAndUpdate
+        pushInductionVariablesFrame
+        analyzeStmtInLookingForIV stmt
         let condLabel = "while_cond_" ++ show counter
         let bodyLabel = "while_body_" ++ show counter
         let endLabel = "while_end_" ++ show counter
         case expr of
           Latte.Abs.ELitFalse _ -> return ()
-          Latte.Abs.ELitTrue _ -> commonWhilePart expr stmt condLabel bodyLabel bodyLabel counter True
-          _ -> commonWhilePart expr stmt condLabel bodyLabel endLabel counter False
+          Latte.Abs.ELitTrue _ -> do
+            newBody <- findStmtToSecondAndNextRotationsOfWhile stmt
+            case newBody of
+              Just newBody -> do
+                commonWhilePart p expr newBody stmt condLabel bodyLabel bodyLabel counter True
+              Nothing -> return ()
+          _ -> do
+            newBody <- findStmtToSecondAndNextRotationsOfWhile stmt
+            case newBody of
+              Just newBody -> do
+                commonWhilePart p expr newBody stmt condLabel bodyLabel endLabel counter False
+              Nothing -> return ()   
+        popInductionVariablesFrame         
       Latte.Abs.Incr p ident -> do
         removeExprsWithVarFromAllFrames (name ident)
         commonDecrIncrOperation ident "add"
@@ -1645,13 +1608,11 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       computedExprsStack = [],
       arguments = Map.empty,
       stringPool = Map.empty,
-      fakeBlocksInsideWhileBody = [],
       returnReached = False,
       concatWasDeclared = False,
       phiNodesStack = [],
       labelsStack = [],
       inductionVariablesStack = [],
-      blockInsideWhileBodyToken = 0,
       tokenWhile = 0,
       isBrLastStmt = False,
       whileBodyStmtsStack = []
