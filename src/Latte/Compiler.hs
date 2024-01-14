@@ -48,6 +48,8 @@ data CompilerState = CompilerState
     labelsStack :: [String],
     inductionVariablesStack :: [Map String (Bool, Int)], -- (nazwa, (czy jest zmienną indukcyjną, const które będziemy dodawać))
     whileBodyStmtsStack :: [[Latte.Abs.Stmt]],
+    blockInsideWhileBodyToken :: Int,
+    fakeBlocksInsideWhileBody :: [Latte.Abs.Stmt],
     tokenWhile :: Int,
     isBrLastStmt :: Bool
   }
@@ -637,6 +639,21 @@ popInductionVariablesFrame = modify $ \s -> s {
       [] -> []
   }
 
+blockInsideWhileBodyTokenUp :: LCS Int
+blockInsideWhileBodyTokenUp = do
+  s <- get
+  modify $ \s -> s { blockInsideWhileBodyToken = blockInsideWhileBodyToken s + 1 }
+  return $ blockInsideWhileBodyToken s
+
+blockInsideWhileBodyTokenDown :: LCS ()
+blockInsideWhileBodyTokenDown = do
+  modify $ \s -> s { blockInsideWhileBodyToken = blockInsideWhileBodyToken s - 1 }
+
+isThisCodeInAnyBlockInsideWhileBody :: LCS Bool
+isThisCodeInAnyBlockInsideWhileBody = do
+  s <- get
+  return $ blockInsideWhileBodyToken s > 1
+
 addInductionVariableToFrame :: String -> Int -> LCS ()
 addInductionVariableToFrame varName val = modify $ \s ->
   let (currentFrame:rest) = inductionVariablesStack s
@@ -679,12 +696,12 @@ analyzeStmtInLookingForIV stmt = do
           markAllVarsAsNonInductive stmt2
     Latte.Abs.While _ expr blockStmt -> case expr of
         Latte.Abs.ELitFalse _ -> return ()
-        _ -> do 
+        _ -> do
           markAllVarsAsNonInductive blockStmt
     _ -> return ()  -- Pominięcie innych typów instrukcji
     where
     markAllVarsAsNonInductive :: Latte.Abs.Stmt -> LCS ()
-    markAllVarsAsNonInductive orgStmt = 
+    markAllVarsAsNonInductive orgStmt =
       case orgStmt of
         Latte.Abs.BStmt _ (Latte.Abs.Block _ stmts)  -> mapM_ markAllVarsAsNonInductive stmts
         Latte.Abs.Cond _ expr stmt  -> markAllVarsAsNonInductive stmt
@@ -703,18 +720,19 @@ analyzeBlockInLookingForIV  (Latte.Abs.Block _ stmts) = mapM_ analyzeStmtInLooki
 
 -- Analiza przypisania
 analyzeAssignmentInLookingForIV  :: Latte.Abs.Ident -> Latte.Abs.Expr -> LCS ()
-analyzeAssignmentInLookingForIV  ident expr  = case expr of
+analyzeAssignmentInLookingForIV ident expr  = case expr of
     -- x = x + c
     Latte.Abs.EAdd _ expr1 op expr2 ->
       analyzeAddExpr ident expr1 op expr2
-    -- Latte.Abs.ELitInt _ _ -> potentiallyMarkAsInductionVar (name ident) (convertELitIntToInt expr)
     --x = x
-    Latte.Abs.EVar _ ident -> do
-      isPotentiallyInduction <- analyzeExprForInduction ident expr
-      if isPotentiallyInduction then
-        potentiallyMarkAsInductionVar (name ident) 0
-      else do
-        markVariableAsNotInduction (name ident)
+    Latte.Abs.EVar _ newIdent -> do
+      if ident == newIdent then do
+        lookupResult <- lookupForInductionVariableInTopFrame (name ident)
+        case lookupResult of
+          Just (True, val) -> potentiallyMarkAsInductionVar (name ident) 0
+          Nothing -> potentiallyMarkAsInductionVar (name ident) 0
+          _ -> markVariableAsNotInduction (name ident)
+      else markVariableAsNotInduction (name ident)
     _ -> do
       markVariableAsNotInduction (name ident)
 
@@ -726,7 +744,7 @@ analyzeAddExpr ident expr1 op expr2 = do
   if isExpr1PotentiallyInduction then do
     case expr2 of
       Latte.Abs.EVar _ newIdent -> do
-        if newIdent == ident then 
+        if newIdent == ident then
           case op of
             Latte.Abs.Plus _ -> potentiallyMarkAsInductionVar (name ident) (convertELitIntToInt expr1)
             Latte.Abs.Minus _ -> markVariableAsNotInduction (name ident) --przypadek c - x oznacza, że x nie basic induction variable
@@ -766,10 +784,19 @@ findStmtToSecondAndNextRotationsOfWhile stmt =
   case stmt of
     Latte.Abs.Empty _ -> return Nothing
     Latte.Abs.BStmt p block -> do
+      blockInsideWhileBodyTokenUp
       listOfStmts <- findStmtsInBlokcToSecondAndNextRotationsOfWhile block
       let newBlock = convertListOfStmtToBlockBody block (catMaybes listOfStmts)
+      blockInsideWhileBodyTokenDown
       return $ Just $ Latte.Abs.BStmt p newBlock
-    Latte.Abs.Decl p ident e -> processDecl stmt
+    Latte.Abs.Decl p ident e -> do
+      newBlock <- processDecl stmt
+      case newBlock of
+        Just block -> do
+          let fakeBlock = Latte.Abs.BStmt p (Latte.Abs.Block p block)
+          putBlockToFakeBlocks fakeBlock
+          return $ Just fakeBlock
+        Nothing -> return Nothing
     Latte.Abs.Ass p ident e -> do
       let varName = name ident
       isIV <- checkIfThisVarIsInduction varName
@@ -800,23 +827,24 @@ findStmtsInBlokcToSecondAndNextRotationsOfWhile  :: Latte.Abs.Block  -> LCS  ([M
 findStmtsInBlokcToSecondAndNextRotationsOfWhile  (Latte.Abs.Block _ stmts) = do
   mapM findStmtToSecondAndNextRotationsOfWhile stmts
 
-processDecl :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
+--TUTAJ
+processDecl :: Latte.Abs.Stmt -> LCS (Maybe [Latte.Abs.Stmt])
 processDecl (Latte.Abs.Decl p t items) = do
-    newStmts <- catMaybes <$> mapM processItem items
-    case newStmts of
-      [] -> return Nothing
-      [oneStmt] -> return $ Just oneStmt
-      _ -> return $ Just $ Latte.Abs.BStmt p (Latte.Abs.Block p newStmts)
+    insideBlock <- isThisCodeInAnyBlockInsideWhileBody
+    newItems <- mapM (processItem insideBlock) items
+    let filteredItems = catMaybes newItems
+    return $ if null filteredItems then Nothing else Just filteredItems
   where
-    processItem :: Latte.Abs.Item -> LCS (Maybe Latte.Abs.Stmt)
-    processItem (Latte.Abs.Init pos ident expr) = do
-      newExpr <- handleMulOpInWhile pos ident expr
-      return $ Just (Latte.Abs.Ass pos ident newExpr)
-    processItem _ = return Nothing
-    processDecl _ = return Nothing
+    processItem :: Bool -> Latte.Abs.Item -> LCS (Maybe Latte.Abs.Stmt)
+    processItem isInsideBlock item =
+      case item of
+        Latte.Abs.NoInit _ _ -> return $ if isInsideBlock then Just (Latte.Abs.Decl p t [item]) else Nothing
+        Latte.Abs.Init pos ident expr -> do
+          newExpr <- handleMulOpInWhile pos ident expr
+          let newStmt = Latte.Abs.Ass pos ident newExpr
+          return $ if isInsideBlock then Just (Latte.Abs.Decl p t [Latte.Abs.Init pos ident newExpr]) else Just newStmt --TODO sprawdzic czy jak bedzie while we while to nadal zastępujemy
+processDecl _ = return Nothing
 
-
--- handleMulOpInWhile :: Latte.Abs.Stmt -> LCS (Latte.Abs.Stmt)
 handleMulOpInWhile :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Latte.Abs.Expr -> LCS Latte.Abs.Expr
 handleMulOpInWhile position ident expr = do
   case expr of
@@ -866,7 +894,7 @@ checkIfExprIsEVar expr = case expr of
 
 takeNameOfEVar :: Latte.Abs.Expr' a -> LCS (String)
 takeNameOfEVar expr = case expr of
-  Latte.Abs.EVar _ ident -> return $ (name ident)
+  Latte.Abs.EVar _ ident -> return (name ident)
   _ -> return ""
 
 checkIfExprIsInt :: Latte.Abs.Expr -> LCS Bool
@@ -890,6 +918,12 @@ checkIfThisVarIsInduction varName = do
     Just (True, _) -> return True
     _ -> return False
 
+putBlockToFakeBlocks :: Latte.Abs.Stmt -> LCS ()
+putBlockToFakeBlocks stmt = modify $ \s -> s { fakeBlocksInsideWhileBody = stmt : fakeBlocksInsideWhileBody s }
+
+checkIfBlockIsInFakeBlocks :: Latte.Abs.Stmt -> LCS Bool
+checkIfBlockIsInFakeBlocks stmt = do
+  gets (elem stmt . fakeBlocksInsideWhileBody)
 
 -- Oznaczanie zmiennej jako indukcyjnej
 potentiallyMarkAsInductionVar :: String -> Int -> LCS ()
@@ -917,23 +951,13 @@ addStmtToWhileBodyStmtsFrame stmt = modify $ \s ->
   let (currentFrame:rest) = whileBodyStmtsStack s
   in s { whileBodyStmtsStack = (currentFrame ++ [stmt]) : rest }
 
--- analyzeWhileLoop :: Latte.Abs.Stmt -> LCS () --funkcja odpowiadająca za znalezienie zmiennych indukcyjnych w pętli while
--- analyzeWhileLoop stmt = do
---     pushInductionVariablesFrame
---     iterativelyAnalyzeBodyOfWhile stmt
---     popInductionVariablesFrame
+composeWhileSecondBody :: Latte.Abs.Stmt -> LCS (Latte.Abs.Stmt)
+composeWhileSecondBody stmt = do
+  newBody <- findStmtToSecondAndNextRotationsOfWhile stmt
+  case newBody of
+    Just newBody -> return newBody
+    Nothing -> return stmt
 
--- iterativelyAnalyzeBodyOfWhile :: Latte.Abs.Stmt -> LCS ()
--- iterativelyAnalyzeBodyOfWhile stmt = do
---     previousCount <- countInductionVariables
---     analyzeStmtInLookingForIV stmt
---     newCount <- countInductionVariables
---     unless (newCount == previousCount) $
---         iterativelyAnalyzeBodyOfWhile stmt
-
--- countInductionVariables :: LCS Int
--- countInductionVariables = do
---     length . filter id . Map.elems <$> getTopInductionVariablesFrame
 
 getArgumentRegisters :: Latte.Abs.Expr -> LCS String
 getArgumentRegisters expr = do
@@ -1295,7 +1319,7 @@ instance CompileExpr Latte.Abs.Expr where
         Just (varType, llvmVarName) -> do
           addExprToFrame node llvmVarName
           return $ "%" ++ llvmVarName
-        Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", at " ++ errLocation p
+        Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
@@ -1389,12 +1413,18 @@ instance Compile Latte.Abs.Stmt where
     else case stmt of
       Latte.Abs.Empty _ -> return ()
       Latte.Abs.BStmt _ block -> do
-        pushExprsFrame
-        pushVariablesFrame
-        modify $ \s -> s { returnReached = False }
-        compile block
-        popVariablesFrame
-        popExprsFrame
+        isFake <- checkIfBlockIsInFakeBlocks stmt
+        if isFake then do
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration(s) (or changed to assignments) inside loop:" ] }
+          compile block
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of declaration(s) inside loop" ] }
+        else do
+          pushExprsFrame
+          pushVariablesFrame
+          modify $ \s -> s { returnReached = False }
+          compile block
+          popVariablesFrame
+          popExprsFrame
       Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
         Latte.Abs.NoInit _ ident -> do
           let varName = name ident
@@ -1428,7 +1458,7 @@ instance Compile Latte.Abs.Stmt where
             removeExprsWithVarFromAllFrames varName
             exprWithType <- combineTypeAndIndentOfExpr expr e
             fakeInitInsteadOfAlloca varName varType e expr True
-          Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", at" ++ errLocation p
+          Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", " ++ errLocation p
       Latte.Abs.Cond p expr stmt -> do
         e <- compilerExpr expr
         case expr of
@@ -1615,11 +1645,13 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       computedExprsStack = [],
       arguments = Map.empty,
       stringPool = Map.empty,
+      fakeBlocksInsideWhileBody = [],
       returnReached = False,
       concatWasDeclared = False,
       phiNodesStack = [],
       labelsStack = [],
       inductionVariablesStack = [],
+      blockInsideWhileBodyToken = 0,
       tokenWhile = 0,
       isBrLastStmt = False,
       whileBodyStmtsStack = []
