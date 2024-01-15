@@ -225,7 +225,7 @@ formatInductionVariables = do
       formatFrame :: Map String (Bool, Int) -> LCS String
       formatFrame frame = do
           let inductionVars = Map.toList $ Map.filter (\(isInduction, _) -> isInduction) frame
-          if null inductionVars 
+          if null inductionVars
               then return "No induction variables in this loop"
               else do
                   varsFormatted <- mapM formatVar inductionVars
@@ -569,13 +569,21 @@ findInPhiFrameByNameAndType name typeToFind = go
 
 createPhiNode :: String -> Type -> String -> String -> String -> String -> StateT CompilerState (Either CompilerError) String
 createPhiNode varName varType regBefore regAfter labelBefore labelAfter = do
-  s <- get
   labelCounter <- getNextPhiCounterAndUpdate
   updateVariableInStack varName varType ("phi_value_" ++ show labelCounter)
   updateVariableInPhiTopFrame varName varType ("phi_value_" ++ show labelCounter)
   return ("%" ++ "phi_value_" ++ show labelCounter ++ " = phi " ++
     typeToLlvmKeyword varType ++ " [ %" ++ regBefore ++ ", %" ++
     labelBefore ++ " ], [ %" ++ regAfter ++ ", %" ++ labelAfter ++ " ]")
+
+createPhiNodeWithOneValue :: String -> Type -> String -> String -> StateT CompilerState (Either CompilerError) String
+createPhiNodeWithOneValue varName varType reg label = do
+  labelCounter <- getNextPhiCounterAndUpdate
+  updateVariableInStack varName varType ("phi_value_" ++ show labelCounter)
+  updateVariableInPhiTopFrame varName varType ("phi_value_" ++ show labelCounter)
+  return ("%" ++ "phi_value_" ++ show labelCounter ++ " = phi " ++
+    typeToLlvmKeyword varType ++ " [ %" ++ reg ++ ", %" ++
+    label ++ " ]")
 
 updateVariableInPhiTopFrame :: String -> Type -> String -> LCS ()
 updateVariableInPhiTopFrame  varName varType newReg = do
@@ -623,30 +631,39 @@ fakeWhileRun expr stmt labelCounter = do
     fakeWhileRunAndCountPhiNodesAndAddPhiBlock expr stmt labelCounter offset
     return ()
 
-handlePhiBlockAtIfElse :: Map String (Type, String) -> Map String (Type, String) -> String -> String -> LCS [String]
-handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch = do
+handlePhiBlockAtIfElse :: Map String (Type, String) -> Map String (Type, String) -> String -> String -> Bool -> Bool -> LCS [String]
+handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch wasReturnInTB wasReturnInFB = do
   -- Krok 1: Obsługa elementów wspólnych dla obu gałęzi if-else
-  commonElements <- forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
-    case Map.lookup varName phiFrameAfterFalse of
-      Just (_, regAfterFalse) -> do
-        -- Tworzenie phi-zmiennej dla elementów wspólnych
-        phiNode <- createPhiNode varName varType regAfterTrue regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
-        return $ Just phiNode
-      Nothing -> do
-        -- W przypadku braku elementu w drugiej ramce
-        regBefore <- getVariableNameFromStack varName
-        phiNode <- createPhiNode varName varType regBefore regAfterTrue lastLabelInFalseBranch lastLabelInTrueBranch
-        return $ Just phiNode
-  -- Krok 2: Obsługa pozostałych elementów
-  remainingElements <- forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
-    -- Sprawdzenie czy element nie został już przetworzony
-    case Map.lookup varName phiFrameAfterTrue of
-      Just _ -> return Nothing -- Element już przetworzony
-      Nothing -> do
-        regBefore <- getVariableNameFromStack varName
-        phiNode <- createPhiNode varName varType regBefore regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
-        return $ Just phiNode
-  return $ catMaybes (commonElements ++ remainingElements)
+  if (not (wasReturnInFB || wasReturnInTB)) then do
+    commonElements <- forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
+      case Map.lookup varName phiFrameAfterFalse of
+        Just (_, regAfterFalse) -> do
+          -- Tworzenie phi-zmiennej dla elementów wspólnych
+          phiNode <- createPhiNode varName varType regAfterTrue regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
+          return $ Just phiNode
+        Nothing -> do
+          -- W przypadku braku elementu w drugiej ramce
+          regBefore <- getVariableNameFromStack varName
+          phiNode <- createPhiNode varName varType regBefore regAfterTrue lastLabelInFalseBranch lastLabelInTrueBranch
+          return $ Just phiNode
+    -- Krok 2: Obsługa pozostałych elementów
+    remainingElements <- forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
+      -- Sprawdzenie czy element nie został już przetworzony
+      case Map.lookup varName phiFrameAfterTrue of
+        Just _ -> return Nothing -- Element już przetworzony
+        Nothing -> do
+          regBefore <- getVariableNameFromStack varName
+          phiNode <- createPhiNode varName varType regBefore regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
+          return $ Just phiNode
+    return $ catMaybes (commonElements ++ remainingElements)
+  -- Krok 3: Obsługa gałęzi if-else, jeśli w tej drugiej wystąpił return
+  else do
+    if wasReturnInTB then do
+      forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
+        createPhiNodeWithOneValue varName varType regAfterFalse lastLabelInFalseBranch
+    else do
+      forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
+        createPhiNodeWithOneValue varName varType regAfterTrue lastLabelInTrueBranch
 
 getVariableNameFromStack :: String -> LCS String
 getVariableNameFromStack varName = do
@@ -1514,7 +1531,7 @@ instance Compile Latte.Abs.Stmt where
                 modify $ \s -> s { isBrLastStmt = False }
                 when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
 
-              
+
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
         case expr of
@@ -1566,7 +1583,7 @@ instance Compile Latte.Abs.Stmt where
               dummy <- putDummyRegister
               modify $ \s -> s { isBrLastStmt = False }
               addInlineFunctionReturnToFrame endLabel dummy
-              phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
+              phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch False False
               modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
               pushLabelToStack endLabel
               modify $ \s -> s { returnReached = originalReturnFlag}
@@ -1574,7 +1591,7 @@ instance Compile Latte.Abs.Stmt where
               unless (returnFlag1 && returnFlag2) $ do
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-                phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch
+                phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
                 pushLabelToStack endLabel
                 modify $ \s -> s { returnReached = originalReturnFlag}
