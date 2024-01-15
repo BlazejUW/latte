@@ -85,8 +85,5 @@ getRelOp op = case op of
   Latte.Abs.EQU _ -> "eq"
   Latte.Abs.NE _ -> "ne"
 
-splitBy :: Char -> String -> [String]
-splitBy c s = case dropWhile (== c) s of
-  "" -> []
-  s' -> w : splitBy c s''
-    where (w, s'') = break (== c) s'
+convertToLlvmString :: String -> String
+convertToLlvmString s = concatMap convertToLlvmChar s ++ "\\00"
