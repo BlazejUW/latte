@@ -1053,8 +1053,14 @@ inlineFunctionCall ident argsRegisters argsTypes = do
   addInlineFunctionArgumentsToFrame argsAbs argsRegisters argsTypes
   label <- findLabelForThisInlineFunction
   compile body
+  topLabel <- getTopLabel
   pushLabelToStack label
   if retType == Void then do
+    isBrLastStmt <- gets isBrLastStmt
+    unless isBrLastStmt $ do
+      dummy <- putDummyRegister
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ label] }
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ [label ++ ":"] }
     register <- putDummyRegister
     popLabelFromStack
     popExprsFrame
@@ -1064,7 +1070,7 @@ inlineFunctionCall ident argsRegisters argsTypes = do
     variablesStack = orifinalVariablesFrame, phiNodesStack = orifinalPhiNodesFrame, inlineFunctionsLabelsStack = originalInlineFunctionsLabelsStack }
     return register
   else do
-    register <- handleReturnPhiBlockInInlineFunction retType label
+    register <- handleReturnPhiBlockInInlineFunction retType label topLabel
     popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
@@ -1088,11 +1094,13 @@ addInlineFunctionArgumentsToFrame functionArgs argsRegisters argsTypes = do
     addVariableToFrame argName argType argsRegistersWithoutPercent
     addPhiNodeToFrame argName argType argsRegistersWithoutPercent
 
-handleReturnPhiBlockInInlineFunction :: Type -> String -> LCS String
-handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd = do
+handleReturnPhiBlockInInlineFunction :: Type -> String -> String -> LCS String
+handleReturnPhiBlockInInlineFunction functionType labelAtTheEnd oneLabelBefore = do
   isBrLastStmt <- gets isBrLastStmt
-  unless isBrLastStmt $
+  unless isBrLastStmt $ do
+    dummy <- putDummyRegister
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ labelAtTheEnd] }
+    addInlineFunctionReturnToFrame oneLabelBefore dummy
   modify $ \s -> s { compilerOutput = compilerOutput s ++ [labelAtTheEnd ++ ":"] }
   counter <- getNextVariableAndUpdate
   topFrame <- gets $ \s -> case inlineFunctionsReturnStack s of
@@ -1560,6 +1568,7 @@ instance Compile Latte.Abs.Stmt where
             phiFrameAfterTrueBranch <- getTopPhiFrame
             popPhiNodesFrame
             if isItInInlineFunction then
+              unless returnFlag1 $
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             else
               unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
@@ -1578,15 +1587,27 @@ instance Compile Latte.Abs.Stmt where
             popExprsFrame
             -- end
             if isItInInlineFunction then do
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-              dummy <- putDummyRegister
-              modify $ \s -> s { isBrLastStmt = False }
-              addInlineFunctionReturnToFrame endLabel dummy
-              phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch False False
-              modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
-              pushLabelToStack endLabel
-              modify $ \s -> s { returnReached = originalReturnFlag}
+              --To mozna zwinac do jednego case
+              unless (returnFlag1 && returnFlag2) $ do
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+                dummy <- putDummyRegister
+                modify $ \s -> s { isBrLastStmt = False }
+                phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+                pushLabelToStack endLabel
+                modify $ \s -> s { returnReached = originalReturnFlag}
+              -- --Tutaj tez warto rozwazyc nie dodawanie tego kodu jesli w obu gałęziach jest return
+              -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+              -- modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+              -- dummy <- putDummyRegister
+              -- modify $ \s -> s { isBrLastStmt = False }
+              -- when (returnFlag1 && returnFlag2) $ do
+              --   addInlineFunctionReturnToFrame endLabel dummy
+              -- phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch False False
+              -- modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+              -- pushLabelToStack endLabel
+              -- modify $ \s -> s { returnReached = originalReturnFlag}
             else
               unless (returnFlag1 && returnFlag2) $ do
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
@@ -1655,7 +1676,9 @@ instance Compile Latte.Abs.Stmt where
                             returnReached = True }
       Latte.Abs.VRet p -> do
         itIsInsideInline <- checkIfCodeIsInsideInlineFunction
-        if itIsInsideInline then
+        if itIsInsideInline then do
+          endOfFunctionLabel <- getEndOfActualFunctionLabel
+          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel], isBrLastStmt = True}
           modify $ \s -> s { returnReached = True }
         else
          modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"],
