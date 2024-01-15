@@ -10,7 +10,7 @@
 module Latte.Compiler where
 
 import Control.Monad.Except (MonadError (throwError))
-import Control.Monad (forM, forM_, unless, when, zipWithM)
+import Control.Monad (forM, forM_, unless, when, zipWithM, foldM)
 import Control.Monad.State (StateT, execStateT, get, gets, modify, put)
 import Data.Map (Map, adjust, delete, insert)
 import qualified Data.Map as Map
@@ -18,8 +18,9 @@ import Data.Maybe (isJust, catMaybes, fromMaybe)
 import Data.List (intercalate)
 import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword,
-  typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd)
+  typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd, splitBy)
 import Data.Void (Void)
+import Text.Read (readMaybe)
 import qualified Distribution.Simple as Latte
 
 
@@ -45,6 +46,7 @@ data CompilerState = CompilerState
     returnReached :: Bool,
     concatWasDeclared :: Bool,
     phiNodesStack :: [Map String (Type,String)],
+    phiNodesCounter :: Int,
     labelsStack :: [String],
     inductionVariablesStack :: [Map String (Bool, Int)], -- (nazwa, (czy jest zmienną indukcyjną, const które będziemy dodawać))
     whileBodyStmtsStack :: [[Latte.Abs.Stmt]],
@@ -218,11 +220,11 @@ isAnyTokenWhileUp = do
   s <- get
   return $ tokenWhile s > 0
 
-commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> Latte.Abs.Stmt -> 
+commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> Latte.Abs.Stmt ->
           String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
 commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
-    ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
-    compile ifStmt
+    -- ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
+    -- compile ifStmt
     tokenWhileUp
     pushPhiNodesFrame
     originalReturnFlag <- gets returnReached
@@ -231,17 +233,18 @@ commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlway
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
     pushPhiNodesFrame
-    fakeWhileRunAndAddPhiBlock expr stmt counter
+    fakeWhileRun expr stmt counter
     variablesStackAfterFakeLoop <- gets variablesStack
-    popPhiNodesFrameAndMergeInIntoStack
+    popPhiNodesFrameAndMergeItIntoStack
     e <- compilerExpr expr
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ show (inductionVariablesStack s)] }
     pushLabelToStack bodyLabel
-    compile stmt
+    -- compile stmt
+    compile oldStmt
     popExprsFrame
-    popPhiNodesFrameAndMergeInIntoStack
+    popPhiNodesFrameAndMergeItIntoStack
     modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { returnReached = originalReturnFlag}
@@ -469,11 +472,19 @@ declareEmptyStringIfNotExists = do
       modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
       return strLabel
 
+adjustNameWithPhiValue :: String -> Int -> String
+adjustNameWithPhiValue s n =
+    case splitBy '_' s of
+        ["phi", "value", numStr] -> case readMaybe numStr :: Maybe Int of
+            Just num -> "phi_value_" ++ show (num + n)
+            Nothing  -> s
+        _ -> s
+
 pushPhiNodesFrame :: LCS ()
 pushPhiNodesFrame = modify $ \s -> s { phiNodesStack = Map.empty : phiNodesStack s }
 
-popPhiNodesFrameAndMergeInIntoStack :: LCS ()
-popPhiNodesFrameAndMergeInIntoStack = do
+popPhiNodesFrameAndMergeItIntoStack :: LCS ()
+popPhiNodesFrameAndMergeItIntoStack = do
   topFrame <- gets $ \s -> case phiNodesStack s of
     (frame:_) -> frame
     _ -> Map.empty
@@ -521,13 +532,16 @@ getPhiNode varName = gets $ \s ->
         justVar -> justVar
   in search (phiNodesStack s)
 
+--Pomysł: może obejść dwa razy fake whilea, po pierwszym razie sprawdzić ile jest phi zmiennych, a w drugim razie zmieniać nazwy już z przesunięciem numeracji
 createPhiBlock :: [Map String (Type, String)] -> Map String (Type, String) -> String -> String -> LCS [String]
 createPhiBlock framesBeforeLoop frameAfterLoop phiLabel whileBodyLabel = do
   let varsAfterLoop = Map.toList frameAfterLoop
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ [";Phi block for variables: " ++ show varsAfterLoop] }
   phiNodes <- mapM createPhiNodeForVar varsAfterLoop
   return $ catMaybes phiNodes
   where
     createPhiNodeForVar (varName, (varType, varRegAfter)) = do
+      let splitByReg = splitBy '_' varRegAfter
       let varBefore = findInPhiFrameByNameAndType varName varType framesBeforeLoop
       case varBefore of
         Just varRegBefore -> Just <$> createPhiNode varName varType varRegBefore varRegAfter phiLabel whileBodyLabel
@@ -552,6 +566,18 @@ createPhiNode varName varType regBefore regAfter labelBefore labelAfter = do
     typeToLlvmKeyword varType ++ " [ %" ++ regBefore ++ ", %" ++
     labelBefore ++ " ], [ %" ++ regAfter ++ ", %" ++ labelAfter ++ " ]")
 
+-- countPhiNodes :: [Map String (Type, String)] -> Map String (Type, String) -> LCS ()
+-- countPhiNodes framesBeforeLoop frameAfterLoop = do
+--   modify $ \s -> s { phiNodesCounter = 0 } 
+--   let varsAfterLoop = Map.toList frameAfterLoop
+--   mapM_ countPhiNode varsAfterLoop
+--   where
+--     countPhiNode (varName, (varType, _)) = do
+--       let varBefore = findInPhiFrameByNameAndType varName varType framesBeforeLoop
+--       case varBefore of
+--         Just _ -> modify $ \s -> s { phiNodesCounter = phiNodesCounter s + 1 } 
+--         Nothing -> return ()
+
 updateVariableInPhiTopFrame :: String -> Type -> String -> LCS ()
 updateVariableInPhiTopFrame  varName varType newReg = do
   s <- get
@@ -559,9 +585,16 @@ updateVariableInPhiTopFrame  varName varType newReg = do
   let updatedFrame = Map.insert varName (varType, newReg) currentFrame
   put s { phiNodesStack = updatedFrame : rest }
 
-fakeWhileRunAndAddPhiBlock :: Latte.Abs.Expr -> Latte.Abs.Stmt -> Int -> StateT CompilerState (Either CompilerError) ()
-fakeWhileRunAndAddPhiBlock expr stmt labelCounter = do
+updatePhiLabelCounterByOffset :: Int -> LCS ()
+updatePhiLabelCounterByOffset offset = do
   s <- get
+  let newCounter = phiCounter s + offset
+  put s { phiCounter = newCounter }
+
+fakeWhileRunAndCountPhiNodesAndAddPhiBlock :: Latte.Abs.Expr -> Latte.Abs.Stmt -> Int -> Int -> LCS Int
+fakeWhileRunAndCountPhiNodesAndAddPhiBlock expr stmt labelCounter phiCounterOffset = do
+  s <- get
+  updatePhiLabelCounterByOffset phiCounterOffset
   phiLabel <- getTopLabel
   pushLabelToStack ("while_body_" ++ show labelCounter)
   originalReturnFlag <- gets returnReached
@@ -577,8 +610,19 @@ fakeWhileRunAndAddPhiBlock expr stmt labelCounter = do
     (frameAfterLoop:_) -> do
       phiBlock <- createPhiBlock variablesStackBeforeLoop frameAfterLoop phiLabel whileBodyLabel
       modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+      let newOffset = length $ filter (/= "") phiBlock
+      return newOffset
     _ -> do
-      return ()
+      return 0
+
+fakeWhileRun :: Latte.Abs.Expr -> Latte.Abs.Stmt -> Int -> StateT CompilerState (Either CompilerError) ()
+fakeWhileRun expr stmt labelCounter = do
+  s <- get
+  offset <- fakeWhileRunAndCountPhiNodesAndAddPhiBlock expr stmt labelCounter 0
+  when (offset > 0) $ do
+    put s
+    fakeWhileRunAndCountPhiNodesAndAddPhiBlock expr stmt labelCounter offset
+    return ()
 
 handlePhiBlockAtIfElse :: Map String (Type, String) -> Map String (Type, String) -> String -> String -> LCS [String]
 handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch = do
@@ -780,20 +824,22 @@ findStmtToSecondAndNextRotationsOfWhile stmt =
       else do
         newExpr <- handleMulOpInWhile p ident e
         return $ Just (Latte.Abs.Ass p ident newExpr)
-    Latte.Abs.Cond _ expr stms -> do
+    Latte.Abs.Cond p expr stms -> do
       case expr of
         Latte.Abs.ELitFalse _ -> return Nothing
-        Latte.Abs.ELitTrue _ -> findStmtToSecondAndNextRotationsOfWhile stms
-        _ -> return $ Just stmt
+        -- _ -> return $ Just stmt
+        _ -> do
+          newStmt <- findStmtToSecondAndNextRotationsOfWhile stms
+          return (Just (Latte.Abs.Cond p expr (fromMaybe stmt newStmt)))
     Latte.Abs.CondElse p e1 stmt1 stmt2 -> do
       case e1 of
         Latte.Abs.ELitTrue _ -> findStmtToSecondAndNextRotationsOfWhile stmt1
         Latte.Abs.ELitFalse _ -> findStmtToSecondAndNextRotationsOfWhile stmt2
-        _ -> return $ Just stmt
-        -- _ -> do
-          -- newStmt1 <- findStmtToSecondAndNextRotationsOfWhile stmt1
-          -- newStmt2 <- findStmtToSecondAndNextRotationsOfWhile stmt2
-          -- return $ Just $ Latte.Abs.CondElse p e1 (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
+        -- _ -> return $ Just stmt
+        _ -> do
+          newStmt1 <- findStmtToSecondAndNextRotationsOfWhile stmt1
+          newStmt2 <- findStmtToSecondAndNextRotationsOfWhile stmt2
+          return $ Just $ Latte.Abs.CondElse p e1 (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
     _ -> return $ Just stmt
 
 findStmtsInBlokcToSecondAndNextRotationsOfWhile  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
@@ -1429,30 +1475,34 @@ instance Compile Latte.Abs.Stmt where
             compile stmt
             returnFlag <- gets returnReached
             phiFrameAfterIf <- gets phiNodesStack
-            popPhiNodesFrameAndMergeInIntoStack
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] } --FIXME
+            -- jesli w ifie jest return to nie dodajemy br label i nie chcemy tworzych phi zmiennych z tego ifa, bo i tak nie beda uzyte i llvm wyrzuci error
+            if not returnFlag then do
+              popPhiNodesFrameAndMergeItIntoStack
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+            else popPhiNodesFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
             lastLabel <- getTopLabel
             pushLabelToStack endLabel
             modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
-            case phiFrameAfterIf of
-              (phiFrameAfter:_) -> do
-                phiBlock <- createPhiBlock framesBeforeIf phiFrameAfter topLabel lastLabel
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
-                if null phiBlock then do
+            unless returnFlag $ do
+              case phiFrameAfterIf of
+                (phiFrameAfter:_) -> do
+                  phiBlock <- createPhiBlock framesBeforeIf phiFrameAfter topLabel lastLabel
+                  modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+                  if null phiBlock then do
+                    isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+                    when isItInInlineFunction $ do
+                      dummy <- putDummyRegister
+                      modify $ \s -> s { isBrLastStmt = False }
+                      when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
+                  else
+                    modify $ \s -> s { isBrLastStmt = False }
+                _ -> do
                   isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
                   when isItInInlineFunction $ do
                     dummy <- putDummyRegister
-                    modify $ \s -> s { isBrLastStmt = False }
                     when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
-                else
-                  modify $ \s -> s { isBrLastStmt = False }
-              _ -> do
-                isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
-                when isItInInlineFunction $ do
-                  dummy <- putDummyRegister
-                  when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
         case expr of
@@ -1538,8 +1588,8 @@ instance Compile Latte.Abs.Stmt where
             case newBody of
               Just newBody -> do
                 commonWhilePart p expr newBody stmt condLabel bodyLabel endLabel counter False
-              Nothing -> return ()   
-        popInductionVariablesFrame         
+              Nothing -> return ()
+        popInductionVariablesFrame
       Latte.Abs.Incr p ident -> do
         removeExprsWithVarFromAllFrames (name ident)
         commonDecrIncrOperation ident "add"
@@ -1597,6 +1647,7 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       variablesCounter = 0,
       labelCounter = 0,
       phiCounter = 0,
+      phiNodesCounter = 0, -- Add the missing field phiNodesCounter
       functionsSignatures = functionsSignatures,
       exprTypes = exprTypes,
       inlineFunctions = inlineFunctions,
