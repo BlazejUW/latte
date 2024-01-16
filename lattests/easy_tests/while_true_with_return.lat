@@ -8,11 +8,17 @@ int main(){
         if(i == 10){
             x = 2*i;
             y = 3*i;
-            printString("i is 10");
-            printInt(i);
-            printInt(x);
-            printInt(y);
-            return 0;
+            if(x == 21){
+                i++;
+                return 0;
+            }
+            else {
+                printString("i is 10");
+                printInt(i);
+                printInt(x);
+                printInt(y);
+                return 0;
+            }
         }
     }
     printInt(i);

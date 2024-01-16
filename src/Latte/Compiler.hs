@@ -41,6 +41,7 @@ data CompilerState = CompilerState
     inlineFunctionsLabelsStack :: [String],
     currentInlineFunctionType :: Type,
     labelsUsedInReturn :: [String],
+    isBrLastStmt :: Bool,
     computedExprsStack :: [[(Latte.Abs.Expr, String)]],
     arguments :: Map String Type,
     stringPool :: Map String Int,
@@ -49,8 +50,11 @@ data CompilerState = CompilerState
     phiNodesStack :: [Map String (Type,String)],
     labelsStack :: [String],
     inductionVariablesStack :: [Map String (Bool, Int)], -- (nazwa, (czy jest zmienną indukcyjną, const które będziemy dodawać))
+    visitedInductionVariables :: [[String]],
     tokenWhile :: Int,
-    isBrLastStmt :: Bool
+    exprsToReduceStack :: [Map Latte.Abs.Expr String], -- expr: nameToThisExpr
+    variablesWithReducedExprStack :: [Map String Int], -- nameOfReducedExpr: number to add
+    reducedVariablesCounter :: Int
   }
   deriving (Eq, Ord, Show)
 
@@ -61,14 +65,38 @@ type CompilerOutput = [String]
 -----------------------------------------------------
 ------------------FUNCTIONS SECTION------------------
 -----------------------------------------------------
---VARIABLES STACK SEGMENT
+
+---------------------------
+--VARIABLES STACK SEGMENT--
+---------------------------
 getExpressionType :: Latte.Abs.Expr -> LCS Type
 getExpressionType expr = do
   s <- get
   case Map.lookup expr (exprTypes s) of
     Just t -> return t
     Nothing -> do
-      throwError $ "Expression type not found: " ++ show expr
+      case expr of 
+        Latte.Abs.ELitInt _ _ -> do
+          modify $ \s -> s { exprTypes = Map.insert expr Integer (exprTypes s) }
+          return Integer
+        Latte.Abs.EVar _ ident -> do
+          let varName = name ident
+          res <- lookupVariableWithReducedExpr varName
+          case res of 
+            Just _ -> do
+              modify $ \s -> s { exprTypes = Map.insert expr Integer (exprTypes s) }
+              return Integer
+            Nothing -> do
+              throwError $ "Expression type not found: " ++ show expr
+        Latte.Abs.EAdd _ expr1 _ expr2 -> do
+          expr1Type <- getExpressionType expr1
+          expr2Type <- getExpressionType expr2
+          if expr1Type == Integer && expr2Type == Integer then do
+            modify $ \s -> s { exprTypes = Map.insert expr Integer (exprTypes s) }
+            return Integer
+          else do
+            throwError $ "Expression type not found: " ++ show expr
+        _ -> throwError $ "Expression type not found: " ++ show expr
 
 getVariableType :: String -> LCS Type
 getVariableType identifier = do
@@ -134,7 +162,7 @@ getVariableNameFromStack varName = do
     Nothing -> do
       s <- get
       throwError $ "Variable not defined in stack: " ++ varName
-      
+
 lookupVariable :: String -> LCS (Maybe (Type, String))
 lookupVariable varName = gets $ \s ->
   let search [] = Nothing
@@ -150,7 +178,9 @@ getNextVariableAndUpdate = do
   modify $ \s -> s { variablesCounter = counter + 1 }
   return ("." ++ show counter)
 
---EXPRESSIONS STACK SEGMENT
+-----------------------------
+--EXPRESSIONS STACK SEGMENT--
+-----------------------------
 pushExprsFrame :: LCS ()
 pushExprsFrame = modify $ \s -> s { computedExprsStack = [] : computedExprsStack s }
 
@@ -274,7 +304,108 @@ containsVar varName (expr, _) = checkExpr expr
       Latte.Abs.EApp _ _ args -> any checkExpr args
       _ -> False
 
---LABELS STACK SEGMENT
+------------------------
+--REDUCE STACK SEGMENT--
+------------------------
+pushReduceStacks :: LCS ()
+pushReduceStacks = do
+  pushReducedExprsFrame
+  pushVariablesWithReducedExprStack
+
+popReduceStacks :: LCS ()
+popReduceStacks = do
+  popReducedExprsFrame
+  popVariablesWithReducedExprStack
+
+pushReducedExprsFrame :: LCS ()
+pushReducedExprsFrame = modify $ \s -> s { exprsToReduceStack = Map.empty : exprsToReduceStack s }
+
+popReducedExprsFrame :: LCS ()
+popReducedExprsFrame = modify $ \s -> s {
+  exprsToReduceStack = case exprsToReduceStack s of
+      (_:rest) -> rest
+      [] -> []
+  }
+
+pushVariablesWithReducedExprStack :: LCS ()
+pushVariablesWithReducedExprStack = modify $ \s -> s { variablesWithReducedExprStack = Map.empty : variablesWithReducedExprStack s }
+
+popVariablesWithReducedExprStack :: LCS ()
+popVariablesWithReducedExprStack = modify $ \s -> s {
+  variablesWithReducedExprStack = case variablesWithReducedExprStack s of
+      (_:rest) -> rest
+      [] -> []
+  }
+
+addVariableWithReducedExprToFrame :: String -> Int -> LCS ()
+addVariableWithReducedExprToFrame varName val = modify $ \s ->
+  let (currentFrame:rest) = variablesWithReducedExprStack s
+  in s { variablesWithReducedExprStack = Map.insert varName val currentFrame : rest }
+
+lookupVariableWithReducedExpr :: String -> LCS (Maybe Int)
+lookupVariableWithReducedExpr varName = do
+  frames <- gets variablesWithReducedExprStack
+  topFrame <- case frames of
+    (topFrame:_) -> do
+      return topFrame
+    _ -> return Map.empty
+  return $ Map.lookup varName topFrame
+
+createVariableWithExprToReduce :: Latte.Abs.Expr -> LCS String
+createVariableWithExprToReduce expr = do
+  s <- get
+  let frames = exprsToReduceStack s
+  let topFrame = case frames of
+        (topFrame:_) -> topFrame
+        _ -> Map.empty
+  let maybeVar = Map.lookup expr topFrame
+  case maybeVar of
+    Just varName -> return varName
+    Nothing -> do
+      let varName = "doNotUseThatName_reducedVariable" ++ show (reducedVariablesCounter s)
+      modify $ \s -> s { reducedVariablesCounter = reducedVariablesCounter s + 1 }
+      modify $ \s -> s { exprsToReduceStack = Map.insert expr varName topFrame : frames }
+      return varName
+
+createDeclToReducedExprs :: LCS (Maybe Latte.Abs.Stmt)
+createDeclToReducedExprs = do
+    frames <- gets exprsToReduceStack
+    case frames of
+        (frame:_) -> do
+            let items = Map.toList frame
+            let declItems = map createDeclItem items
+            return $ Just $ Latte.Abs.Decl Latte.Abs.BNFC'NoPosition (Latte.Abs.Int Latte.Abs.BNFC'NoPosition) declItems
+        _ -> return Nothing
+
+createDeclItem :: (Latte.Abs.Expr, String) -> Latte.Abs.Item
+createDeclItem (expr, varName) = do
+  Latte.Abs.Init Latte.Abs.BNFC'NoPosition (Latte.Abs.Ident varName) expr
+
+createAssignmentBlockWithReducedExpression :: LCS [Latte.Abs.Stmt]
+createAssignmentBlockWithReducedExpression = do
+  frames <- gets exprsToReduceStack
+  case frames of
+    (topFrame:_) -> do
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Ass block. Frames: " ++ (show frames)] }
+      let items = Map.toList topFrame
+      mapM createNewAssignmentForReducedVariable items
+    _ -> return []
+
+createNewAssignmentForReducedVariable :: (Latte.Abs.Expr, String) -> LCS Latte.Abs.Stmt
+createNewAssignmentForReducedVariable (expr, name) = do
+  result <- lookupVariableWithReducedExpr name
+  let p = Latte.Abs.BNFC'NoPosition
+  let ident = Latte.Abs.Ident name
+  case result of
+    Just number -> do
+      let num = fromIntegral number
+      let add = createEAdd p ident num
+      return $ Latte.Abs.Ass p ident add
+    Nothing -> return $ Latte.Abs.Ass p ident expr  -- fallback to original expression if not found
+
+------------------------
+--LABELS STACK SEGMENT--
+------------------------
 getNextLabelCounterAndUpdate :: LCS Int
 getNextLabelCounterAndUpdate = do
   s <- get
@@ -289,7 +420,24 @@ getNextPhiCounterAndUpdate = do
   modify $ \s -> s { phiCounter = counter }
   return counter
 
---LOOP SEGMENT
+getTopLabel :: LCS String
+getTopLabel = gets $ \s -> case labelsStack s of
+  (topLabel:_) -> topLabel
+  _ -> error "No label on stack"
+
+pushLabelToStack :: String -> LCS ()
+pushLabelToStack label = modify $ \s -> s { labelsStack = label : labelsStack s }
+
+popLabelFromStack :: LCS ()
+popLabelFromStack = modify $ \s -> s {
+  labelsStack = case labelsStack s of
+      (_:rest) -> rest
+      [] -> []
+  }
+
+----------------
+--LOOP SEGMENT--
+----------------
 tokenWhileUp :: LCS Int
 tokenWhileUp = do
   s <- get
@@ -307,9 +455,9 @@ isAnyTokenWhileUp = do
   s <- get
   return $ tokenWhile s > 0
 
-commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> Latte.Abs.Stmt ->
-          String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
-commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
+commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> String -> 
+          String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
+commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; First rotation of loop number " ++ show counter ++ ":"] }
     -- ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
     -- compile ifStmt
@@ -319,7 +467,6 @@ commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlway
     modify $ \s -> s { returnReached = False }
     pushExprsFrame
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Rest of the rotation of loop number " ++ show counter ++ ":"] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
     pushPhiNodesFrame
     fakeWhileRun expr stmt counter
@@ -328,11 +475,10 @@ commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlway
     e <- compilerExpr expr
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
-    -- ivsToString <- formatInductionVariables
-    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ ivsToString] }
+    ivsToString <- formatInductionVariables
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ ivsToString] }
     pushLabelToStack bodyLabel
-    -- compile stmt
-    compile oldStmt
+    compile stmt
     popExprsFrame
     popPhiNodesFrameAndMergeItIntoStack
     modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
@@ -349,7 +495,9 @@ commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlway
         addInlineFunctionReturnToFrame endLabel dummy
       pushLabelToStack endLabel
 
---STMT FUNCTIONS SEGMENT
+--------------------------
+--STMT FUNCTIONS SEGMENT--
+--------------------------
 printArg :: Latte.Abs.Arg -> String
 printArg (Latte.Abs.Arg _ argType ident) =
     typeToLlvmKeyword (keywordToType argType) ++ " %" ++ name ident
@@ -449,7 +597,9 @@ commonDecrIncrOperation ident op = do
       addPhiNodeToFrame varName varType opCounter
     Nothing -> throwError $ "Variable not defined: " ++ varName
 
--- PHI SEGMENT
+----------------
+-- PHI SEGMENT--
+----------------
 pushPhiNodesFrame :: LCS ()
 pushPhiNodesFrame = modify $ \s -> s { phiNodesStack = Map.empty : phiNodesStack s }
 
@@ -621,24 +771,9 @@ handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranc
       forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
         createPhiNodeWithOneValue varName varType regAfterTrue lastLabelInTrueBranch
 
--- LABELS STACK SECTION
-
-getTopLabel :: LCS String
-getTopLabel = gets $ \s -> case labelsStack s of
-  (topLabel:_) -> topLabel
-  _ -> error "No label on stack"
-
-pushLabelToStack :: String -> LCS ()
-pushLabelToStack label = modify $ \s -> s { labelsStack = label : labelsStack s }
-
-popLabelFromStack :: LCS ()
-popLabelFromStack = modify $ \s -> s {
-  labelsStack = case labelsStack s of
-      (_:rest) -> rest
-      [] -> []
-  }
-
---INDUCTION VARIABLES SECTION
+-------------------------------
+--INDUCTION VARIABLES SEGMENT--
+-------------------------------
 pushInductionVariablesFrame :: LCS ()
 pushInductionVariablesFrame = modify $ \s -> s { inductionVariablesStack = Map.empty : inductionVariablesStack s }
 
@@ -653,6 +788,58 @@ addInductionVariableToFrame :: String -> Int -> LCS ()
 addInductionVariableToFrame varName val = modify $ \s ->
   let (currentFrame:rest) = inductionVariablesStack s
   in s { inductionVariablesStack = Map.insert varName (True, val) currentFrame : rest }
+
+pushVisitedInductionVariablesFrame :: LCS ()
+pushVisitedInductionVariablesFrame = modify $ \s -> s { visitedInductionVariables = [] : visitedInductionVariables s }
+
+popVisitedInductionVariablesFrame :: LCS ()
+popVisitedInductionVariablesFrame = modify $ \s -> s {
+  visitedInductionVariables = case visitedInductionVariables s of
+      (_:rest) -> rest
+      [] -> []
+  }
+
+markInductionVariableAsVisited :: String -> LCS ()
+markInductionVariableAsVisited varName = do
+  maybeVar <- lookupForInductionVariableInTopFrame varName
+  visitedInductionVariablesFrames <- gets visitedInductionVariables
+  when (isJust maybeVar) $ do
+    case visitedInductionVariablesFrames of
+      (topFrame:rest) -> do
+        modify $ \s -> s { visitedInductionVariables = (varName:topFrame) : rest }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Marked as visited: " ++ varName] }
+        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Visited induction variables: " ++ show (visitedInductionVariables s)] }
+      [] -> do
+        modify $ \s -> s { visitedInductionVariables = [[varName]] }
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Oznaczyłem " ++ varName++ " jako odwiedzoną ale jest sama w liscie" ] }
+        
+
+checkIfInductionVariableWasVisited :: String -> LCS Bool
+checkIfInductionVariableWasVisited varName = do
+  visitedFrames <- gets visitedInductionVariables
+  case visitedFrames of
+    [] -> return False
+    (frame:rest) -> do
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Visited induction variables: " ++ show (frame)] }
+      return (varName `elem` frame)
+
+getValueOfInductionVariable :: String -> LCS (Maybe Int)
+getValueOfInductionVariable varName = do
+  maybeVar <- lookupForInductionVariableInTopFrame varName
+  case maybeVar of
+    Just (_, val) -> return $ Just val
+    Nothing -> return Nothing
+
+--w tej wersji, jeśli zmienna jest inkrementowana dwa razy, to nie zostanie uznana za indukcyjną
+potentiallyMarkAsInductionVar :: String -> Int -> LCS ()
+potentiallyMarkAsInductionVar varName val = do
+  lookupResult <- lookupForInductionVariableInTopFrame varName
+  case lookupResult of
+    Just (True, _)  -> markVariableAsNotInduction varName
+    Nothing -> do
+      addInductionVariableToFrame varName val
+      return ()
+    _ -> return ()
 
 markVariableAsNotInduction :: String -> LCS ()
 markVariableAsNotInduction varName = modify $ \s ->
@@ -718,14 +905,7 @@ analyzeAssignmentInLookingForIV ident expr  = case expr of
     Latte.Abs.EAdd _ expr1 op expr2 ->
       analyzeAddExpr ident expr1 op expr2
     --x = x
-    Latte.Abs.EVar _ newIdent -> do
-      if ident == newIdent then do
-        lookupResult <- lookupForInductionVariableInTopFrame (name ident)
-        case lookupResult of
-          Just (True, val) -> potentiallyMarkAsInductionVar (name ident) 0
-          Nothing -> potentiallyMarkAsInductionVar (name ident) 0
-          _ -> markVariableAsNotInduction (name ident)
-      else markVariableAsNotInduction (name ident)
+    Latte.Abs.EVar _ newIdent -> return () --TODO sprawdzic
     _ -> do
       markVariableAsNotInduction (name ident)
 
@@ -770,156 +950,12 @@ analyzeExprForInduction ident expr = case expr of
       return (res1 && res2)
     _ -> return False
 
-findStmtToSecondAndNextRotationsOfWhile :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
-findStmtToSecondAndNextRotationsOfWhile stmt =
-  case stmt of
-    Latte.Abs.Empty _ -> return Nothing
-    Latte.Abs.BStmt p block -> do
-      listOfStmts <- findStmtsInBlokcToSecondAndNextRotationsOfWhile block
-      let newBlock = convertListOfStmtToBlockBody block (catMaybes listOfStmts)
-      return $ Just $ Latte.Abs.BStmt p newBlock
-    Latte.Abs.Ass p ident e -> do
-      let varName = name ident
-      isIV <- checkIfThisVarIsInduction varName
-      if isIV then return (Just stmt)
-      else do
-        newExpr <- handleMulOpInWhile p ident e
-        return $ Just (Latte.Abs.Ass p ident newExpr)
-    Latte.Abs.Cond p expr stms -> do
-      case expr of
-        Latte.Abs.ELitFalse _ -> return Nothing
-        -- _ -> return $ Just stmt
-        _ -> do
-          newStmt <- findStmtToSecondAndNextRotationsOfWhile stms
-          return (Just (Latte.Abs.Cond p expr (fromMaybe stmt newStmt)))
-    Latte.Abs.CondElse p e1 stmt1 stmt2 -> do
-      case e1 of
-        Latte.Abs.ELitTrue _ -> findStmtToSecondAndNextRotationsOfWhile stmt1
-        Latte.Abs.ELitFalse _ -> findStmtToSecondAndNextRotationsOfWhile stmt2
-        -- _ -> return $ Just stmt
-        _ -> do
-          newStmt1 <- findStmtToSecondAndNextRotationsOfWhile stmt1
-          newStmt2 <- findStmtToSecondAndNextRotationsOfWhile stmt2
-          return $ Just $ Latte.Abs.CondElse p e1 (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
-    _ -> return $ Just stmt
-
-findStmtsInBlokcToSecondAndNextRotationsOfWhile  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
-findStmtsInBlokcToSecondAndNextRotationsOfWhile  (Latte.Abs.Block _ stmts) = do
-  mapM findStmtToSecondAndNextRotationsOfWhile stmts
-
--- --TUTAJ
--- processDecl :: Latte.Abs.Stmt -> LCS (Maybe [Latte.Abs.Stmt])
--- processDecl (Latte.Abs.Decl p t items) = do
---     newItems <- mapM (processItem insideBlock) items
---     let filteredItems = catMaybes newItems
---     return $ if null filteredItems then Nothing else Just filteredItems
---   where
---     processItem :: Bool -> Latte.Abs.Item -> LCS (Maybe Latte.Abs.Stmt)
---     processItem isInsideBlock item =
---       case item of
---         Latte.Abs.NoInit _ _ -> return $ if isInsideBlock then Just (Latte.Abs.Decl p t [item]) else Nothing
---         Latte.Abs.Init pos ident expr -> do
---           newExpr <- handleMulOpInWhile pos ident expr
---           let newStmt = Latte.Abs.Ass pos ident newExpr
---           return $ if isInsideBlock then Just (Latte.Abs.Decl p t [Latte.Abs.Init pos ident newExpr]) else Just newStmt --TODO sprawdzic czy jak bedzie while we while to nadal zastępujemy
--- processDecl _ = return Nothing
-
-handleMulOpInWhile :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Latte.Abs.Expr -> LCS Latte.Abs.Expr
-handleMulOpInWhile position ident expr = do
-  case expr of
-    Latte.Abs.EMul p e1 op e2-> do
-      e1IsEVar <- checkIfExprIsEVar e1
-      e2IsEVar <- checkIfExprIsEVar e2
-      e1IsInt <- checkIfExprIsInt e1
-      e2IsInt <- checkIfExprIsInt e2
-      if e1IsEVar && e2IsInt then do
-        varName <- takeNameOfEVar e1
-        isIV <- checkIfThisVarIsInduction varName
-        if isIV then do
-          case op of
-            Latte.Abs.Times _ -> do
-              maybeConst <- lookupForInductionVariableInTopFrame varName
-              case maybeConst of
-                Just (_, const) -> do
-                  let newConst = const * (convertELitIntToInt e2)
-                  createEAddAndAddExprTypeToFrame position ident (toInteger newConst)
-                Nothing -> return expr
-            _ -> return expr
-        else do
-          return expr
-      else do
-        if e1IsInt && e2IsEVar then do
-          varName <- takeNameOfEVar e2
-          isIV <- checkIfThisVarIsInduction varName
-          if isIV then do
-            case op of
-              Latte.Abs.Times _ -> do
-                maybeConst <- lookupForInductionVariableInTopFrame varName
-                case maybeConst of
-                  Just (_, const) -> do
-                    let newConst = const * (convertELitIntToInt e1)
-                    createEAddAndAddExprTypeToFrame position ident (toInteger newConst)
-                  Nothing -> return expr
-              _ -> return expr
-          else do
-            return expr
-        else return expr
-    _ -> return expr
-
-createEAddAndAddExprTypeToFrame :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Integer -> LCS Latte.Abs.Expr
-createEAddAndAddExprTypeToFrame position ident val = do
-  let newExpr = createEAdd position ident val
-  let newEVar = Latte.Abs.EVar position ident
-  modify $ \s -> s {exprTypes = Map.insert newExpr Integer (exprTypes s)}
-  modify $ \s -> s {exprTypes = Map.insert newEVar Integer (exprTypes s)}
-  return newExpr
-
-checkIfExprIsEVar :: Latte.Abs.Expr -> LCS Bool
-checkIfExprIsEVar expr = case expr of
-  Latte.Abs.EVar _ _ -> return True
-  _ -> return False
-
-takeNameOfEVar :: Latte.Abs.Expr' a -> LCS (String)
-takeNameOfEVar expr = case expr of
-  Latte.Abs.EVar _ ident -> return (name ident)
-  _ -> return ""
-
-checkIfExprIsInt :: Latte.Abs.Expr -> LCS Bool
-checkIfExprIsInt expr = case expr of
-  Latte.Abs.ELitInt _ _ -> return True
-  Latte.Abs.Neg _ expr -> checkIfExprIsInt expr
-  Latte.Abs.EAdd _ expr1 _ expr2 -> do
-    res1 <- checkIfExprIsInt expr1
-    res2 <- checkIfExprIsInt expr2
-    return (res1 && res2)
-  Latte.Abs.EMul _ expr1 _ expr2 -> do
-    res1 <- checkIfExprIsInt expr1
-    res2 <- checkIfExprIsInt expr2
-    return (res1 && res2)
-  _ -> return False
-
 checkIfThisVarIsInduction :: String -> LCS Bool
 checkIfThisVarIsInduction varName = do
   topFrame <- getTopInductionVariablesFrame
   case Map.lookup varName topFrame of
     Just (True, _) -> return True
     _ -> return False
-
--- Oznaczanie zmiennej jako indukcyjnej
-potentiallyMarkAsInductionVar :: String -> Int -> LCS ()
-potentiallyMarkAsInductionVar varName val = do
-  lookupResult <- lookupForInductionVariableInTopFrame varName
-  case lookupResult of
-    Just (True, actualVal)  -> addInductionVariableToFrame varName (val + actualVal)
-    Nothing -> do
-      addInductionVariableToFrame varName val
-      return ()
-    _ -> return ()
-
-createFirstWhileRotationAsCond :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> LCS Latte.Abs.Stmt
-createFirstWhileRotationAsCond p expr stmt = do
-  let newStmt = Latte.Abs.Cond p expr stmt
-  return newStmt
 
 formatInductionVariables :: LCS String
 formatInductionVariables = do
@@ -930,7 +966,7 @@ formatInductionVariables = do
   where
       formatFrame :: Map String (Bool, Int) -> LCS String
       formatFrame frame = do
-          let inductionVars = Map.toList $ Map.filter (\(isInduction, _) -> isInduction) frame
+          let inductionVars = Map.toList $ Map.filter (fst) frame
           if null inductionVars
               then return "No induction variables in this loop"
               else do
@@ -943,7 +979,152 @@ formatInductionVariables = do
           Just (_, reg) -> return $ "("++reg ++ " (" ++ name ++ ") changes by " ++ show change ++ " in each iteration)"
           Nothing -> throwError $ "Variable not defined: " ++ name ++ " (in formatInductionVariables)"
 
---INLINE FUNCTIONS SEGMENT
+--REDUCE EXPR SUBSEGMENT--
+reduceExpr :: Latte.Abs.Expr -> LCS Latte.Abs.Expr
+reduceExpr node = case node of
+  Latte.Abs.EAdd p l op r -> do
+    rL <- reduceExpr l
+    rR <- reduceExpr r
+    return $ Latte.Abs.EAdd p rL op rR
+  Latte.Abs.EMul p l op r -> reduceMul (Latte.Abs.EMul p l op r) node
+  Latte.Abs.Neg p expr -> do
+      case expr of
+          Latte.Abs.ELitInt _ i -> return $ Latte.Abs.ELitInt p (-i)
+          _ -> do
+            r <- reduceExpr expr
+            return $ Latte.Abs.Neg p r
+  Latte.Abs.EAnd p l r -> do
+    rL <- reduceExpr l
+    rR <- reduceExpr r
+    return $ Latte.Abs.EAnd p rL rR
+  Latte.Abs.EOr p l r -> do
+    rL <- reduceExpr l
+    rR <- reduceExpr r
+    return $ Latte.Abs.EOr p rL rR
+  Latte.Abs.Not p expr -> do
+    r <- reduceExpr expr
+    return $ Latte.Abs.Not p r
+  Latte.Abs.ERel p l op r -> do
+    rL <- reduceExpr l
+    rR <- reduceExpr r
+    return $ Latte.Abs.ERel p rL op rR
+  Latte.Abs.EApp p ident exprs -> do
+    rExprs <- mapM reduceExpr exprs
+    return $ Latte.Abs.EApp p ident rExprs
+  _ -> return node
+
+reduceMul :: Latte.Abs.Expr -> Latte.Abs.Expr -> LCS Latte.Abs.Expr
+reduceMul (Latte.Abs.EMul p l op r) node = do
+  reducedL <- reduceExpr l
+  reducedR <- reduceExpr r
+  case op of
+    Latte.Abs.Times _ -> do
+      case (reducedL, reducedR) of
+        (Latte.Abs.ELitInt _ l, Latte.Abs.EVar _ r) -> reduceMulWithInduction reducedL reducedR node
+        (Latte.Abs.EVar _ l, Latte.Abs.ELitInt _ r) -> reduceMulWithInduction reducedR reducedL node     
+        _ -> return $ Latte.Abs.EMul p reducedL op reducedR
+    _ -> return $ Latte.Abs.EMul p reducedL op reducedR
+
+reduceMulWithInduction :: Latte.Abs.Expr -> Latte.Abs.Expr -> Latte.Abs.Expr -> LCS Latte.Abs.Expr
+reduceMulWithInduction (Latte.Abs.ELitInt p1 l) (Latte.Abs.EVar p2 r) node = do
+  isIV <- checkIfThisVarIsInduction (name r)
+  if isIV then do
+    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Dodaję do expr reduction wyrazenie: " ++ name r ++ " * " ++ show l] }
+    newVar <- createVariableWithExprToReduce node
+    ivVal <- getValueOfInductionVariable (name r)
+    valueToNewVar <- case ivVal of
+      Just val -> do
+        let number = fromIntegral val * (fromIntegral l) 
+        addVariableWithReducedExprToFrame newVar number
+        return ()
+      Nothing -> error "Something went wrong with reduceMulWithInduction"
+    wasVisited <- checkIfInductionVariableWasVisited (name r)
+    if wasVisited then do
+      return (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar))
+    else do
+      val <- getValueOfInductionVariable (name r)
+      case val of
+        Just val -> do
+          let minus = Latte.Abs.Minus p1
+          let subVal = Latte.Abs.ELitInt p1 (fromIntegral val)
+          let subExpr = Latte.Abs.EAdd p1 (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar)) minus subVal
+          return subExpr
+        Nothing -> error "Something went wrong with reduceMulWithInduction"
+  else return node
+
+replaceExprsInStmtToReduced :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
+replaceExprsInStmtToReduced stmt =
+  case stmt of
+    Latte.Abs.Empty _ -> return Nothing
+    Latte.Abs.BStmt p block -> do
+      listOfStmts <- replaceExprsToReducedInBlock block
+      let newBlock = convertListOfStmtToBlockBody block (catMaybes listOfStmts)
+      return $ Just $ Latte.Abs.BStmt p newBlock
+    Latte.Abs.Decl p t items -> do
+      newItems <- forM items $ \item -> case item of
+        Latte.Abs.Init pos ident expr -> do
+          newExpr <- reduceExpr expr
+          return $ Latte.Abs.Init pos ident newExpr
+        noInit -> return noInit
+      return $ Just $ Latte.Abs.Decl p t newItems
+    Latte.Abs.Ass p ident e -> do
+      let varName = name ident
+      isIV <- checkIfThisVarIsInduction varName
+      if isIV then do
+        case e of
+          Latte.Abs.EVar _ _ -> return () 
+          _ -> markInductionVariableAsVisited varName
+        return (Just stmt)
+      else do
+        newExpr <- reduceExpr e
+        return $ Just (Latte.Abs.Ass p ident newExpr)
+    Latte.Abs.Cond p expr stms -> do
+      case expr of
+        Latte.Abs.ELitFalse _ -> return Nothing
+        _ -> do
+          newExpr <- reduceExpr expr
+          newStmt <- replaceExprsInStmtToReduced stms
+          return (Just (Latte.Abs.Cond p newExpr (fromMaybe stmt newStmt)))
+    Latte.Abs.CondElse p e stmt1 stmt2 -> do
+      case e of
+        Latte.Abs.ELitTrue _ -> replaceExprsInStmtToReduced stmt1
+        Latte.Abs.ELitFalse _ -> replaceExprsInStmtToReduced stmt2
+        _ -> do
+          newExpr <- reduceExpr e
+          newStmt1 <- replaceExprsInStmtToReduced stmt1
+          newStmt2 <- replaceExprsInStmtToReduced stmt2
+          return $ Just $ Latte.Abs.CondElse p newExpr (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)  
+    Latte.Abs.While p e s-> do
+      newExpr <- reduceExpr e
+      return $ Just $ Latte.Abs.While p newExpr s
+    Latte.Abs.Incr p ident -> do 
+      markInductionVariableAsVisited (name ident)
+      return $ Just stmt
+    Latte.Abs.Decr p ident -> do
+      markInductionVariableAsVisited (name ident)
+      return $ Just stmt
+    Latte.Abs.Ret p expr -> do
+      newExpr <- reduceExpr expr
+      return $ Just $ Latte.Abs.Ret p newExpr
+    Latte.Abs.VRet p -> return $ Just stmt
+
+replaceExprsToReducedInBlock  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
+replaceExprsToReducedInBlock  (Latte.Abs.Block _ stmts) = do
+  mapM replaceExprsInStmtToReduced stmts
+
+replaceBodyOfWhileWithReduction :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
+replaceBodyOfWhileWithReduction body = do
+  analyzeStmtInLookingForIV body
+  bodyWithReduction <- replaceExprsInStmtToReduced body
+  case bodyWithReduction of
+    Just (Latte.Abs.BStmt p (Latte.Abs.Block _ stmts)) -> do
+      stmtsToAddAtBegin <- createAssignmentBlockWithReducedExpression
+      return $ Just $ Latte.Abs.BStmt p (Latte.Abs.Block p (stmtsToAddAtBegin ++ stmts))
+    _ -> return $ Just body
+
+----------------------------
+--INLINE FUNCTIONS SEGMENT--
+----------------------------
 isFunctionInline :: (Latte.Abs.Ident, [Type]) -> LCS Bool
 isFunctionInline function = do
   gets (Map.member function . inlineFunctions)
@@ -1377,7 +1558,6 @@ instance CompileExpr Latte.Abs.Expr where
                 addExprToFrame node ( counter)
                 return $ "%" ++  counter
 
-
 ---------------------------------------------------
 ------------------COMPILE SECTION------------------
 ---------------------------------------------------
@@ -1567,11 +1747,8 @@ instance Compile Latte.Abs.Stmt where
             topLabelAfterTrueBranch <- getTopLabel
             phiFrameAfterTrueBranch <- getTopPhiFrame
             popPhiNodesFrame
-            if isItInInlineFunction then
-              unless returnFlag1 $
+            unless returnFlag1 $
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-            else
-              unless returnFlag1 $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             -- false branch
             variableStackBeforeFalseBranch <- gets variablesStack
             pushExprsFrame
@@ -1597,17 +1774,6 @@ instance Compile Latte.Abs.Stmt where
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
                 pushLabelToStack endLabel
                 modify $ \s -> s { returnReached = originalReturnFlag}
-              -- --Tutaj tez warto rozwazyc nie dodawanie tego kodu jesli w obu gałęziach jest return
-              -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-              -- modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-              -- dummy <- putDummyRegister
-              -- modify $ \s -> s { isBrLastStmt = False }
-              -- when (returnFlag1 && returnFlag2) $ do
-              --   addInlineFunctionReturnToFrame endLabel dummy
-              -- phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch False False
-              -- modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
-              -- pushLabelToStack endLabel
-              -- modify $ \s -> s { returnReached = originalReturnFlag}
             else
               unless (returnFlag1 && returnFlag2) $ do
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
@@ -1618,28 +1784,32 @@ instance Compile Latte.Abs.Stmt where
                 modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
       Latte.Abs.While p expr stmt -> do
-        pushInductionVariablesFrame
+        -- pushInductionVariablesFrame
         counter <- getNextLabelCounterAndUpdate
         pushInductionVariablesFrame
-        analyzeStmtInLookingForIV stmt
+        pushReduceStacks
+        newBody <- replaceBodyOfWhileWithReduction stmt
+        decl <- createDeclToReducedExprs
+        case decl of
+          Just decl -> compile decl
+          Nothing -> return ()
         let condLabel = "while_cond_" ++ show counter
         let bodyLabel = "while_body_" ++ show counter
         let endLabel = "while_end_" ++ show counter
         case expr of
           Latte.Abs.ELitFalse _ -> return ()
           Latte.Abs.ELitTrue _ -> do
-            newBody <- findStmtToSecondAndNextRotationsOfWhile stmt
             case newBody of
               Just newBody -> do
-                commonWhilePart p expr newBody stmt condLabel bodyLabel bodyLabel counter True
+                commonWhilePart p expr newBody condLabel bodyLabel bodyLabel counter True
               Nothing -> return ()
           _ -> do
-            newBody <- findStmtToSecondAndNextRotationsOfWhile stmt
             case newBody of
               Just newBody -> do
-                commonWhilePart p expr newBody stmt condLabel bodyLabel endLabel counter False
+                commonWhilePart p expr newBody condLabel bodyLabel endLabel counter False
               Nothing -> return ()
         popInductionVariablesFrame
+        popReduceStacks
       Latte.Abs.Incr p ident -> do
         removeExprsWithVarFromAllFrames (name ident)
         commonDecrIncrOperation ident "add"
@@ -1717,7 +1887,11 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       labelsStack = [],
       inductionVariablesStack = [],
       tokenWhile = 0,
-      isBrLastStmt = False
+      isBrLastStmt = False,
+      visitedInductionVariables = [],
+      exprsToReduceStack = [],
+      variablesWithReducedExprStack = [],
+      reducedVariablesCounter = 0
     }
     predefFunctions =
       [

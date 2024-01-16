@@ -75,7 +75,6 @@ createEAdd pos ident num =
         addOp = if num >= 0 then Latte.Abs.Plus pos else Latte.Abs.Minus pos
     in Latte.Abs.EAdd pos varExpr addOp intExpr
 
-
 getRelOp :: Latte.Abs.RelOp' a -> String
 getRelOp op = case op of
   Latte.Abs.LTH _ -> "slt"
