@@ -87,3 +87,8 @@ getRelOp op = case op of
 
 convertToLlvmString :: String -> String
 convertToLlvmString s = concatMap convertToLlvmChar s ++ "\\00"
+
+removeLeadingPercent :: String -> String
+removeLeadingPercent s = case s of
+    ('%':rest) -> rest
+    _ -> s

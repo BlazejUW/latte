@@ -17,14 +17,15 @@ import qualified Data.Map as Map
 import Data.Maybe (isJust, catMaybes, fromMaybe)
 import Data.List (intercalate)
 import qualified Latte.Abs
-import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword,
+import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, removeLeadingPercent,
   typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd, convertToLlvmString)
 import Data.Void (Void)
 import Text.Read (readMaybe)
 import qualified Distribution.Simple as Latte
 
-
---STATE SECTION
+-------------------------------------------------
+------------------STATE SECTION------------------
+-------------------------------------------------
 data CompilerState = CompilerState
   {
     compilerOutput :: CompilerOutput,
@@ -57,8 +58,10 @@ type LCS a = StateT CompilerState (Either CompilerError) a
 type CompilerError = String
 type CompilerOutput = [String]
 
-
---FUNCTIONS SECTION
+-----------------------------------------------------
+------------------FUNCTIONS SECTION------------------
+-----------------------------------------------------
+--VARIABLES STACK SEGMENT
 getExpressionType :: Latte.Abs.Expr -> LCS Type
 getExpressionType expr = do
   s <- get
@@ -66,6 +69,15 @@ getExpressionType expr = do
     Just t -> return t
     Nothing -> do
       throwError $ "Expression type not found: " ++ show expr
+
+getVariableType :: String -> LCS Type
+getVariableType identifier = do
+  state <- get
+  let findTypeInStack [] = error $ "Variable " ++ identifier ++ " not found"
+      findTypeInStack (frame:rest) = case Map.lookup identifier frame of
+        Just (varType, _) -> return varType
+        Nothing -> findTypeInStack rest
+  findTypeInStack (variablesStack state)
 
 pushVariablesFrame :: LCS ()
 pushVariablesFrame = modify $ \s -> s { variablesStack = Map.empty : variablesStack s }
@@ -81,204 +93,6 @@ addVariableToFrame :: String -> Type -> String  -> LCS ()
 addVariableToFrame varName varType llvmVarName = modify $ \s ->
   let (currentFrame:rest) = variablesStack s
   in s { variablesStack = Map.insert varName (varType, llvmVarName) currentFrame : rest }
-
-lookupVariable :: String -> LCS (Maybe (Type, String))
-lookupVariable varName = gets $ \s ->
-  let search [] = Nothing
-      search (frame:rest) = case Map.lookup varName frame of
-        Nothing -> search rest
-        justVar -> justVar
-  in search (variablesStack s)
-
-isFunctionInline :: (Latte.Abs.Ident, [Type]) -> LCS Bool
-isFunctionInline function = do
-  gets (Map.member function . inlineFunctions)
-
-putDummyRegister :: LCS String
-putDummyRegister = do
-  isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
-  if isItInInlineFunction then
-    generateDummyRegister
-  else return ""
-
-generateDummyRegister :: LCS String
-generateDummyRegister = do
-  counter <- getNextVariableAndUpdate
-  let dummyRegister = "%" ++ counter ++ "_dummy"
-  returnType <- gets currentInlineFunctionType
-  case returnType of
-    String -> do
-      emptyStringLabel <- declareEmptyStringIfNotExists
-      let call = dummyRegister ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
-            emptyStringLabel ++ ", i32 0, i32 0"
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
-    Void -> do --TODO moze mozna to usunąć
-      let dummyAdd = dummyRegister ++ " = add i1 0, 0"
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
-    _ -> do
-      let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
-  return dummyRegister
-
-pushExprsFrame :: LCS ()
-pushExprsFrame = modify $ \s -> s { computedExprsStack = [] : computedExprsStack s }
-
-popExprsFrame :: LCS ()
-popExprsFrame = modify $ \s -> s {
-  computedExprsStack = case computedExprsStack s of
-      (_:rest) -> rest
-      [] -> []
-  }
-
-addExprToFrame :: Latte.Abs.Expr -> String -> LCS ()
-addExprToFrame expr llvmVarName = modify $ \s ->
-  case computedExprsStack s of
-    (currentFrame:rest) ->
-      s { computedExprsStack = ((expr, llvmVarName) : currentFrame) : rest }
-    [] ->
-      s { computedExprsStack = [[(expr, llvmVarName)]] }
-
-getVariableType :: String -> LCS Type
-getVariableType identifier = do
-  state <- get
-  let findTypeInStack [] = error $ "Variable " ++ identifier ++ " not found"
-      findTypeInStack (frame:rest) = case Map.lookup identifier frame of
-        Just (varType, _) -> return varType
-        Nothing -> findTypeInStack rest
-  findTypeInStack (variablesStack state)
-
-getNextVariableAndUpdate :: LCS String
-getNextVariableAndUpdate = do
-  s <- get
-  let counter = variablesCounter s
-  modify $ \s -> s { variablesCounter = counter + 1 }
-  return ("." ++ show counter)
-
-getNextLabelCounterAndUpdate :: LCS Int
-getNextLabelCounterAndUpdate = do
-  s <- get
-  let counter =  labelCounter s + 1
-  modify $ \s -> s { labelCounter = counter }
-  return counter
-
-getNextPhiCounterAndUpdate :: LCS Int
-getNextPhiCounterAndUpdate = do
-  s <- get
-  let counter =  phiCounter s + 1
-  modify $ \s -> s { phiCounter = counter }
-  return counter
-
-findOrDeclareString :: String -> LCS Int
-findOrDeclareString str = do
-  s <- get
-  let stringPool = Latte.Compiler.stringPool s
-  case Map.lookup str stringPool of
-    Just index -> return index
-    Nothing -> do
-      let index = Map.size stringPool
-      modify $ \s -> s { stringPool = Map.insert str index stringPool }
-      return index
-
-combineTypeAndIndentOfExpr :: Latte.Abs.Expr -> String -> LCS String
-combineTypeAndIndentOfExpr expr exprStr = do
-  exprType <- getExpressionType expr
-  return $ typeToLlvmKeyword exprType ++ " " ++ exprStr
-
-commonDecrIncrOperation :: Latte.Abs.Ident -> String -> StateT CompilerState (Either CompilerError) ()
-commonDecrIncrOperation ident op = do
-  s <- get
-  let varName = name ident
-  maybeVar <- lookupVariable varName
-  case maybeVar of
-    Just (varType, llvmVarName) -> do
-      opCounter <- getNextVariableAndUpdate
-      let opInstr = "%" ++ opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ llvmVarName ++ ", 1"
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [opInstr] }
-      updateVariableInStack varName varType opCounter
-      addPhiNodeToFrame varName varType opCounter
-    Nothing -> throwError $ "Variable not defined: " ++ varName
-
-tokenWhileUp :: LCS Int
-tokenWhileUp = do
-  s <- get
-  modify $ \s -> s { tokenWhile = tokenWhile s + 1 }
-  return $ tokenWhile s
-
-tokenWhileDown :: LCS Int
-tokenWhileDown = do
-  s <- get
-  modify $ \s -> s { tokenWhile = tokenWhile s - 1 }
-  return $ tokenWhile s
-
-isAnyTokenWhileUp :: LCS Bool
-isAnyTokenWhileUp = do
-  s <- get
-  return $ tokenWhile s > 0
-
-formatInductionVariables :: LCS String
-formatInductionVariables = do
-  stack <- gets inductionVariablesStack
-  case stack of
-      (frame:_) -> formatFrame frame
-      _ -> return "No induction variables in this loop"
-  where
-      formatFrame :: Map String (Bool, Int) -> LCS String
-      formatFrame frame = do
-          let inductionVars = Map.toList $ Map.filter (\(isInduction, _) -> isInduction) frame
-          if null inductionVars
-              then return "No induction variables in this loop"
-              else do
-                  varsFormatted <- mapM formatVar inductionVars
-                  return $ intercalate ", " varsFormatted
-      formatVar :: (String, (Bool, Int)) -> LCS String
-      formatVar (name, (_, change)) = do
-        registerOfVar <- lookupVariable name
-        case registerOfVar of
-          Just (_, reg) -> return $ "("++reg ++ " (" ++ name ++ ") changes by " ++ show change ++ " in each iteration)"
-          Nothing -> throwError $ "Variable not defined: " ++ name ++ " (in formatInductionVariables)"
-
-
-commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> Latte.Abs.Stmt ->
-          String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
-commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
-    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; First rotation of loop number " ++ show counter ++ ":"] }
-    -- ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
-    -- compile ifStmt
-    tokenWhileUp
-    pushPhiNodesFrame
-    originalReturnFlag <- gets returnReached
-    modify $ \s -> s { returnReached = False }
-    pushExprsFrame
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Rest of the rotation of loop number " ++ show counter ++ ":"] }
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
-    pushPhiNodesFrame
-    fakeWhileRun expr stmt counter
-    variablesStackAfterFakeLoop <- gets variablesStack
-    popPhiNodesFrameAndMergeItIntoStack
-    e <- compilerExpr expr
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
-    -- ivsToString <- formatInductionVariables
-    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ ivsToString] }
-    pushLabelToStack bodyLabel
-    -- compile stmt
-    compile oldStmt
-    popExprsFrame
-    popPhiNodesFrameAndMergeItIntoStack
-    modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
-    modify $ \s -> s { returnReached = originalReturnFlag}
-    tokenWhileDown
-    if isAlwaysTrue then
-      return ()
-    else do
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-      isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
-      when isItInInlineFunction $ do
-        dummy <- putDummyRegister
-        addInlineFunctionReturnToFrame endLabel dummy
-      pushLabelToStack endLabel
 
 updateVariableInStack :: String -> Type -> String -> LCS ()
 updateVariableInStack varName varType newReg = do
@@ -300,6 +114,65 @@ updateVariableInFrame frame varName varType newReg =
       let updatedFrame = Map.insert varName (varType, newReg) frame
       in updatedFrame
     Nothing -> frame
+
+findOrDeclareString :: String -> LCS Int
+findOrDeclareString str = do
+  s <- get
+  let stringPool = Latte.Compiler.stringPool s
+  case Map.lookup str stringPool of
+    Just index -> return index
+    Nothing -> do
+      let index = Map.size stringPool
+      modify $ \s -> s { stringPool = Map.insert str index stringPool }
+      return index
+
+getVariableNameFromStack :: String -> LCS String
+getVariableNameFromStack varName = do
+  maybeVar <- lookupVariable varName
+  case maybeVar of
+    Just (_, llvmVarName) -> return llvmVarName
+    Nothing -> do
+      s <- get
+      throwError $ "Variable not defined in stack: " ++ varName
+      
+lookupVariable :: String -> LCS (Maybe (Type, String))
+lookupVariable varName = gets $ \s ->
+  let search [] = Nothing
+      search (frame:rest) = case Map.lookup varName frame of
+        Nothing -> search rest
+        justVar -> justVar
+  in search (variablesStack s)
+
+getNextVariableAndUpdate :: LCS String
+getNextVariableAndUpdate = do
+  s <- get
+  let counter = variablesCounter s
+  modify $ \s -> s { variablesCounter = counter + 1 }
+  return ("." ++ show counter)
+
+--EXPRESSIONS STACK SEGMENT
+pushExprsFrame :: LCS ()
+pushExprsFrame = modify $ \s -> s { computedExprsStack = [] : computedExprsStack s }
+
+popExprsFrame :: LCS ()
+popExprsFrame = modify $ \s -> s {
+  computedExprsStack = case computedExprsStack s of
+      (_:rest) -> rest
+      [] -> []
+  }
+
+addExprToFrame :: Latte.Abs.Expr -> String -> LCS ()
+addExprToFrame expr llvmVarName = modify $ \s ->
+  case computedExprsStack s of
+    (currentFrame:rest) ->
+      s { computedExprsStack = ((expr, llvmVarName) : currentFrame) : rest }
+    [] ->
+      s { computedExprsStack = [[(expr, llvmVarName)]] }
+
+combineTypeAndIndentOfExpr :: Latte.Abs.Expr -> String -> LCS String
+combineTypeAndIndentOfExpr expr exprStr = do
+  exprType <- getExpressionType expr
+  return $ typeToLlvmKeyword exprType ++ " " ++ exprStr
 
 compareLatteAddOp :: Latte.Abs.AddOp -> Latte.Abs.AddOp -> Bool
 compareLatteAddOp op1 op2 = case (op1, op2) of
@@ -323,13 +196,6 @@ compareLatteRelOp op1 op2 = case (op1, op2) of
     (Latte.Abs.EQU _, Latte.Abs.EQU _) -> True
     (Latte.Abs.NE _, Latte.Abs.NE _)   -> True
     _                  -> False
-
-printArg :: Latte.Abs.Arg -> String
-printArg (Latte.Abs.Arg _ argType ident) =
-    typeToLlvmKeyword (keywordToType argType) ++ " %" ++ name ident
-
-getArgsTypesFromFnDef :: [Latte.Abs.Arg] -> [Type]
-getArgsTypesFromFnDef = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType)
 
 isExprEqual :: Latte.Abs.Expr -> Latte.Abs.Expr -> LCS Bool
 isExprEqual expr1 expr2 = case (expr1, expr2) of
@@ -374,7 +240,6 @@ lookupExprsFrame expr = do
     _ -> return []
   searchExprsFrame topFrame expr
 
-
 searchExprsFrame :: [(Latte.Abs.Expr, String)]-> Latte.Abs.Expr  -> LCS (Maybe String)
 searchExprsFrame [] _ = return Nothing
 searchExprsFrame ((expr, llvmVarName):rest) exprToSearch = do
@@ -408,6 +273,89 @@ containsVar varName (expr, _) = checkExpr expr
       Latte.Abs.ERel _ expr1 _ expr2 -> checkExpr expr1 || checkExpr expr2
       Latte.Abs.EApp _ _ args -> any checkExpr args
       _ -> False
+
+--LABELS STACK SEGMENT
+getNextLabelCounterAndUpdate :: LCS Int
+getNextLabelCounterAndUpdate = do
+  s <- get
+  let counter =  labelCounter s + 1
+  modify $ \s -> s { labelCounter = counter }
+  return counter
+
+getNextPhiCounterAndUpdate :: LCS Int
+getNextPhiCounterAndUpdate = do
+  s <- get
+  let counter =  phiCounter s + 1
+  modify $ \s -> s { phiCounter = counter }
+  return counter
+
+--LOOP SEGMENT
+tokenWhileUp :: LCS Int
+tokenWhileUp = do
+  s <- get
+  modify $ \s -> s { tokenWhile = tokenWhile s + 1 }
+  return $ tokenWhile s
+
+tokenWhileDown :: LCS Int
+tokenWhileDown = do
+  s <- get
+  modify $ \s -> s { tokenWhile = tokenWhile s - 1 }
+  return $ tokenWhile s
+
+isAnyTokenWhileUp :: LCS Bool
+isAnyTokenWhileUp = do
+  s <- get
+  return $ tokenWhile s > 0
+
+commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> Latte.Abs.Stmt ->
+          String -> String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
+commonWhilePart p expr stmt oldStmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
+    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; First rotation of loop number " ++ show counter ++ ":"] }
+    -- ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
+    -- compile ifStmt
+    tokenWhileUp
+    pushPhiNodesFrame
+    originalReturnFlag <- gets returnReached
+    modify $ \s -> s { returnReached = False }
+    pushExprsFrame
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Rest of the rotation of loop number " ++ show counter ++ ":"] }
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ [condLabel ++ ":"] }
+    pushPhiNodesFrame
+    fakeWhileRun expr stmt counter
+    variablesStackAfterFakeLoop <- gets variablesStack
+    popPhiNodesFrameAndMergeItIntoStack
+    e <- compilerExpr expr
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ bodyLabel ++ ", label %" ++ endLabel] }
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
+    -- ivsToString <- formatInductionVariables
+    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ ivsToString] }
+    pushLabelToStack bodyLabel
+    -- compile stmt
+    compile oldStmt
+    popExprsFrame
+    popPhiNodesFrameAndMergeItIntoStack
+    modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
+    modify $ \s -> s { returnReached = originalReturnFlag}
+    tokenWhileDown
+    if isAlwaysTrue then
+      return ()
+    else do
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+      isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+      when isItInInlineFunction $ do
+        dummy <- putDummyRegister
+        addInlineFunctionReturnToFrame endLabel dummy
+      pushLabelToStack endLabel
+
+--STMT FUNCTIONS SEGMENT
+printArg :: Latte.Abs.Arg -> String
+printArg (Latte.Abs.Arg _ argType ident) =
+    typeToLlvmKeyword (keywordToType argType) ++ " %" ++ name ident
+
+getArgsTypesFromFnDef :: [Latte.Abs.Arg] -> [Type]
+getArgsTypesFromFnDef = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType)
 
 fakeInitInsteadOfAlloca :: String -> Type -> String -> Latte.Abs.Expr' a -> Bool -> StateT CompilerState (Either CompilerError) ()
 fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case expr of
@@ -474,12 +422,6 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
     else do
       addVariableToFrame varName varType (removeLeadingPercent exprString)
 
-
-removeLeadingPercent :: String -> String
-removeLeadingPercent s = case s of
-    ('%':rest) -> rest
-    _ -> s
-
 declareEmptyStringIfNotExists :: LCS String
 declareEmptyStringIfNotExists = do
   s <- get
@@ -493,6 +435,21 @@ declareEmptyStringIfNotExists = do
       modify $ \s -> s {compilerOutput = declaration : compilerOutput s}
       return strLabel
 
+commonDecrIncrOperation :: Latte.Abs.Ident -> String -> StateT CompilerState (Either CompilerError) ()
+commonDecrIncrOperation ident op = do
+  s <- get
+  let varName = name ident
+  maybeVar <- lookupVariable varName
+  case maybeVar of
+    Just (varType, llvmVarName) -> do
+      opCounter <- getNextVariableAndUpdate
+      let opInstr = "%" ++ opCounter ++ " = " ++ op ++ " " ++ typeToLlvmKeyword varType ++ " %" ++ llvmVarName ++ ", 1"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [opInstr] }
+      updateVariableInStack varName varType opCounter
+      addPhiNodeToFrame varName varType opCounter
+    Nothing -> throwError $ "Variable not defined: " ++ varName
+
+-- PHI SEGMENT
 pushPhiNodesFrame :: LCS ()
 pushPhiNodesFrame = modify $ \s -> s { phiNodesStack = Map.empty : phiNodesStack s }
 
@@ -545,7 +502,6 @@ getPhiNode varName = gets $ \s ->
         justVar -> justVar
   in search (phiNodesStack s)
 
---Pomysł: może obejść dwa razy fake whilea, po pierwszym razie sprawdzić ile jest phi zmiennych, a w drugim razie zmieniać nazwy już z przesunięciem numeracji
 createPhiBlock :: [Map String (Type, String)] -> Map String (Type, String) -> String -> String -> LCS [String]
 createPhiBlock framesBeforeLoop frameAfterLoop phiLabel whileBodyLabel = do
   let varsAfterLoop = Map.toList frameAfterLoop
@@ -665,14 +621,7 @@ handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranc
       forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
         createPhiNodeWithOneValue varName varType regAfterTrue lastLabelInTrueBranch
 
-getVariableNameFromStack :: String -> LCS String
-getVariableNameFromStack varName = do
-  maybeVar <- lookupVariable varName
-  case maybeVar of
-    Just (_, llvmVarName) -> return llvmVarName
-    Nothing -> do
-      s <- get
-      throwError $ "Variable not defined in stack: " ++ varName
+-- LABELS STACK SECTION
 
 getTopLabel :: LCS String
 getTopLabel = gets $ \s -> case labelsStack s of
@@ -689,6 +638,7 @@ popLabelFromStack = modify $ \s -> s {
       [] -> []
   }
 
+--INDUCTION VARIABLES SECTION
 pushInductionVariablesFrame :: LCS ()
 pushInductionVariablesFrame = modify $ \s -> s { inductionVariablesStack = Map.empty : inductionVariablesStack s }
 
@@ -698,7 +648,6 @@ popInductionVariablesFrame = modify $ \s -> s {
       (_:rest) -> rest
       [] -> []
   }
-
 
 addInductionVariableToFrame :: String -> Int -> LCS ()
 addInductionVariableToFrame varName val = modify $ \s ->
@@ -760,11 +709,9 @@ analyzeStmtInLookingForIV stmt = do
         Latte.Abs.Decr _ ident -> markVariableAsNotInduction (name ident)
         _ -> return ()
 
--- Analiza bloku instrukcji
 analyzeBlockInLookingForIV  :: Latte.Abs.Block  -> LCS ()
 analyzeBlockInLookingForIV  (Latte.Abs.Block _ stmts) = mapM_ analyzeStmtInLookingForIV  stmts
 
--- Analiza przypisania
 analyzeAssignmentInLookingForIV  :: Latte.Abs.Ident -> Latte.Abs.Expr -> LCS ()
 analyzeAssignmentInLookingForIV ident expr  = case expr of
     -- x = x + c
@@ -782,7 +729,6 @@ analyzeAssignmentInLookingForIV ident expr  = case expr of
     _ -> do
       markVariableAsNotInduction (name ident)
 
--- Analiza dodawania x + c
 analyzeAddExpr :: Latte.Abs.Ident -> Latte.Abs.Expr -> Latte.Abs.AddOp ->Latte.Abs.Expr -> LCS ()
 analyzeAddExpr ident expr1 op expr2 = do
   isExpr1PotentiallyInduction <- analyzeExprForInduction ident expr1
@@ -823,7 +769,6 @@ analyzeExprForInduction ident expr = case expr of
       res2 <- analyzeExprForInduction ident expr2
       return (res1 && res2)
     _ -> return False
-
 
 findStmtToSecondAndNextRotationsOfWhile :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
 findStmtToSecondAndNextRotationsOfWhile stmt =
@@ -975,6 +920,33 @@ createFirstWhileRotationAsCond :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> L
 createFirstWhileRotationAsCond p expr stmt = do
   let newStmt = Latte.Abs.Cond p expr stmt
   return newStmt
+
+formatInductionVariables :: LCS String
+formatInductionVariables = do
+  stack <- gets inductionVariablesStack
+  case stack of
+      (frame:_) -> formatFrame frame
+      _ -> return "No induction variables in this loop"
+  where
+      formatFrame :: Map String (Bool, Int) -> LCS String
+      formatFrame frame = do
+          let inductionVars = Map.toList $ Map.filter (\(isInduction, _) -> isInduction) frame
+          if null inductionVars
+              then return "No induction variables in this loop"
+              else do
+                  varsFormatted <- mapM formatVar inductionVars
+                  return $ intercalate ", " varsFormatted
+      formatVar :: (String, (Bool, Int)) -> LCS String
+      formatVar (name, (_, change)) = do
+        registerOfVar <- lookupVariable name
+        case registerOfVar of
+          Just (_, reg) -> return $ "("++reg ++ " (" ++ name ++ ") changes by " ++ show change ++ " in each iteration)"
+          Nothing -> throwError $ "Variable not defined: " ++ name ++ " (in formatInductionVariables)"
+
+--INLINE FUNCTIONS SEGMENT
+isFunctionInline :: (Latte.Abs.Ident, [Type]) -> LCS Bool
+isFunctionInline function = do
+  gets (Map.member function . inlineFunctions)
 
 getArgumentRegisters :: Latte.Abs.Expr -> LCS String
 getArgumentRegisters expr = do
@@ -1146,11 +1118,39 @@ generateEndOfInlineFunctionComment key retType reg = do
     Void -> modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName key] }
     _ ->  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; End of inline function call: " ++ functionName key ++ ", with result in register " ++ reg] }
 
+putDummyRegister :: LCS String
+putDummyRegister = do
+  isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
+  if isItInInlineFunction then
+    generateDummyRegister
+  else return ""
+
+generateDummyRegister :: LCS String
+generateDummyRegister = do
+  counter <- getNextVariableAndUpdate
+  let dummyRegister = "%" ++ counter ++ "_dummy"
+  returnType <- gets currentInlineFunctionType
+  case returnType of
+    String -> do
+      emptyStringLabel <- declareEmptyStringIfNotExists
+      let call = dummyRegister ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
+            emptyStringLabel ++ ", i32 0, i32 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
+    Void -> do --TODO moze mozna to usunąć
+      let dummyAdd = dummyRegister ++ " = add i1 0, 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
+    _ -> do
+      let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
+  return dummyRegister
+
 --DO USUNIĘCIA
 putMapToStringList :: Map.Map String (Type, String) -> [String]
 putMapToStringList m = [k ++ ":" ++ v | (k, (_, v)) <- Map.toList m]
 
---EXPRESSIONS SECTION
+-------------------------------------------------------
+------------------EXPRESSIONS SECTION------------------
+-------------------------------------------------------
 class CompileExpr a where
   compilerExpr :: a -> LCS String
 
@@ -1378,7 +1378,9 @@ instance CompileExpr Latte.Abs.Expr where
                 return $ "%" ++  counter
 
 
---COMPILE SECTION
+---------------------------------------------------
+------------------COMPILE SECTION------------------
+---------------------------------------------------
 class Compile a where
   compile :: a -> LCS ()
 
@@ -1421,7 +1423,6 @@ instance Compile Latte.Abs.TopDef where
       modify $ \s -> s { labelsStack = [], labelsUsedInReturn = [], variablesStack = [], computedExprsStack = [], phiNodesStack = [] }
       -- popVariablesFrame
       -- popExprsFrame
-
 
 instance Compile Latte.Abs.Block where
   compile (Latte.Abs.Block _ stmts) = do
@@ -1538,7 +1539,6 @@ instance Compile Latte.Abs.Stmt where
                 dummy <- putDummyRegister
                 modify $ \s -> s { isBrLastStmt = False }
                 when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
-
 
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
@@ -1687,8 +1687,9 @@ instance Compile Latte.Abs.Stmt where
         compilerExpr expr
         return ()
 
-
---MAIN SECTION
+------------------------------------------------
+------------------MAIN SECTION------------------
+------------------------------------------------
 runCompiler :: (Compile a) => a -> Map (Latte.Abs.Ident, [Type]) Type -> Map Latte.Abs.Expr Type ->
   Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block) -> Either String CompilerState
 runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (compile program) initialState
