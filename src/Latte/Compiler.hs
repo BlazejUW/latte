@@ -53,8 +53,9 @@ data CompilerState = CompilerState
     visitedInductionVariables :: [[String]],
     tokenWhile :: Int,
     exprsToReduceStack :: [Map Latte.Abs.Expr String], -- expr: nameToThisExpr
-    variablesWithReducedExprStack :: [Map String Int], -- nameOfReducedExpr: number to add
+    variablesWithReducedExprStack :: [Map String (String,Int)], -- nameOfReducedExpr: number to add
     reducedVariablesCounter :: Int
+    
   }
   deriving (Eq, Ord, Show)
 
@@ -337,12 +338,12 @@ popVariablesWithReducedExprStack = modify $ \s -> s {
       [] -> []
   }
 
-addVariableWithReducedExprToFrame :: String -> Int -> LCS ()
-addVariableWithReducedExprToFrame varName val = modify $ \s ->
+addVariableWithReducedExprToFrame :: String -> String ->  Int -> LCS ()
+addVariableWithReducedExprToFrame varName iv val = modify $ \s ->
   let (currentFrame:rest) = variablesWithReducedExprStack s
-  in s { variablesWithReducedExprStack = Map.insert varName val currentFrame : rest }
+  in s { variablesWithReducedExprStack = Map.insert varName (iv,val) currentFrame : rest }
 
-lookupVariableWithReducedExpr :: String -> LCS (Maybe Int)
+lookupVariableWithReducedExpr :: String -> LCS (Maybe (String,Int))
 lookupVariableWithReducedExpr varName = do
   frames <- gets variablesWithReducedExprStack
   topFrame <- case frames of
@@ -381,7 +382,7 @@ createDeclItem :: (Latte.Abs.Expr, String) -> Latte.Abs.Item
 createDeclItem (expr, varName) = do
   Latte.Abs.Init Latte.Abs.BNFC'NoPosition (Latte.Abs.Ident varName) expr
 
-createAssignmentBlockWithReducedExpression :: LCS [Latte.Abs.Stmt]
+createAssignmentBlockWithReducedExpression :: LCS [(String,Latte.Abs.Stmt)]
 createAssignmentBlockWithReducedExpression = do
   frames <- gets exprsToReduceStack
   case frames of
@@ -391,17 +392,22 @@ createAssignmentBlockWithReducedExpression = do
       mapM createNewAssignmentForReducedVariable items
     _ -> return []
 
-createNewAssignmentForReducedVariable :: (Latte.Abs.Expr, String) -> LCS Latte.Abs.Stmt
+createMapFromList :: [(String, Latte.Abs.Stmt)] -> Map String [Latte.Abs.Stmt]
+createMapFromList = foldl insertStmt Map.empty
+  where
+    insertStmt m (k, v) = Map.insertWith (++) k [v] m
+
+createNewAssignmentForReducedVariable :: (Latte.Abs.Expr, String) -> LCS (String, Latte.Abs.Stmt)
 createNewAssignmentForReducedVariable (expr, name) = do
   result <- lookupVariableWithReducedExpr name
   let p = Latte.Abs.BNFC'NoPosition
   let ident = Latte.Abs.Ident name
   case result of
-    Just number -> do
+    Just (iv,number) -> do
       let num = fromIntegral number
       let add = createEAdd p ident num
-      return $ Latte.Abs.Ass p ident add
-    Nothing -> return $ Latte.Abs.Ass p ident expr  -- fallback to original expression if not found
+      return $ (iv,Latte.Abs.Ass p ident add)
+    Nothing -> error $ "Something went wrong in function createNewAssignmentForReducedVariable with variable" ++ name
 
 ------------------------
 --LABELS STACK SEGMENT--
@@ -1035,21 +1041,22 @@ reduceMulWithInduction (Latte.Abs.ELitInt p1 l) (Latte.Abs.EVar p2 r) node = do
     valueToNewVar <- case ivVal of
       Just val -> do
         let number = fromIntegral val * (fromIntegral l) 
-        addVariableWithReducedExprToFrame newVar number
+        addVariableWithReducedExprToFrame newVar (name r) number
         return ()
       Nothing -> error "Something went wrong with reduceMulWithInduction"
-    wasVisited <- checkIfInductionVariableWasVisited (name r)
-    if wasVisited then do
-      return (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar))
-    else do
-      val <- getValueOfInductionVariable (name r)
-      case val of
-        Just val -> do
-          let minus = Latte.Abs.Minus p1
-          let subVal = Latte.Abs.ELitInt p1 (fromIntegral val)
-          let subExpr = Latte.Abs.EAdd p1 (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar)) minus subVal
-          return subExpr
-        Nothing -> error "Something went wrong with reduceMulWithInduction"
+    -- wasVisited <- checkIfInductionVariableWasVisited (name r)
+    -- if wasVisited then do
+    return (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar))
+    -- else do
+    --   val <- getValueOfInductionVariable (name r)
+    --   case val of
+    --     Just val -> do
+    --       --przenieś do po dekrementacji
+    --       let minus = Latte.Abs.Minus p1
+    --       let subVal = Latte.Abs.ELitInt p1 (fromIntegral val)
+    --       let subExpr = Latte.Abs.EAdd p1 (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar)) minus subVal
+    --       return subExpr
+    --     Nothing -> error "Something went wrong with reduceMulWithInduction"
   else return node
 
 replaceExprsInStmtToReduced :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
@@ -1107,6 +1114,7 @@ replaceExprsInStmtToReduced stmt =
       newExpr <- reduceExpr expr
       return $ Just $ Latte.Abs.Ret p newExpr
     Latte.Abs.VRet p -> return $ Just stmt
+    _ -> return $ Just stmt
 
 replaceExprsToReducedInBlock  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
 replaceExprsToReducedInBlock  (Latte.Abs.Block _ stmts) = do
@@ -1117,10 +1125,37 @@ replaceBodyOfWhileWithReduction body = do
   analyzeStmtInLookingForIV body
   bodyWithReduction <- replaceExprsInStmtToReduced body
   case bodyWithReduction of
-    Just (Latte.Abs.BStmt p (Latte.Abs.Block _ stmts)) -> do
-      stmtsToAddAtBegin <- createAssignmentBlockWithReducedExpression
-      return $ Just $ Latte.Abs.BStmt p (Latte.Abs.Block p (stmtsToAddAtBegin ++ stmts))
+    Just (Latte.Abs.BStmt p block) -> do
+      newBlock <- addAssignmentToVarsAfterIV block
+      return $ Just $ Latte.Abs.BStmt p newBlock
     _ -> return $ Just body
+
+addAssignmentToVarsAfterIV :: Latte.Abs.Block -> LCS Latte.Abs.Block
+addAssignmentToVarsAfterIV block  = do
+  stmtsToAddAfterIV <- createAssignmentBlockWithReducedExpression 
+  let mapWithIvsAndStmts = createMapFromList stmtsToAddAfterIV
+  return $ addStmtsAfterInductionVars mapWithIvsAndStmts block
+
+addStmtsAfterInductionVars :: Map.Map String [Latte.Abs.Stmt] -> Latte.Abs.Block -> Latte.Abs.Block
+addStmtsAfterInductionVars stmtMap (Latte.Abs.Block p stmts) = Latte.Abs.Block p (addStmts stmts)
+  where
+    addStmts :: [Latte.Abs.Stmt] -> [Latte.Abs.Stmt]
+    addStmts [] = []
+    addStmts (s:ss) = 
+      case s of
+        Latte.Abs.Ass p ident _ -> 
+          s : getExtraStmts (name ident) ++ addStmts ss
+        Latte.Abs.Incr p ident -> 
+          s : getExtraStmts (name ident) ++ addStmts ss
+        Latte.Abs.Decr p ident -> 
+          s : getExtraStmts (name ident) ++ addStmts ss
+        -- Obsługa zagnieżdżonych bloków
+        Latte.Abs.BStmt p block -> 
+          Latte.Abs.BStmt p (addStmtsAfterInductionVars stmtMap block) : addStmts ss
+        _ -> s : addStmts ss
+
+    getExtraStmts :: String -> [Latte.Abs.Stmt]
+    getExtraStmts varName = Map.findWithDefault [] varName stmtMap
 
 ----------------------------
 --INLINE FUNCTIONS SEGMENT--
