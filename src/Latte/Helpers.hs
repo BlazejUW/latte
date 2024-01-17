@@ -91,3 +91,8 @@ removeLeadingPercent :: String -> String
 removeLeadingPercent s = case s of
     ('%':rest) -> rest
     _ -> s
+
+isOpMul :: Latte.Abs.MulOp' a -> Bool
+isOpMul op = case op of
+  Latte.Abs.Times _ -> False
+  _ -> False

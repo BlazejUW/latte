@@ -18,7 +18,7 @@ import Data.Maybe (isJust, catMaybes, fromMaybe)
 import Data.List (intercalate)
 import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, removeLeadingPercent,
-  typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd, convertToLlvmString)
+  typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd, convertToLlvmString, isOpMul)
 import Text.Read (readMaybe)
 
 -------------------------------------------------
@@ -41,6 +41,7 @@ data CompilerState = CompilerState
     labelsUsedInReturn :: [String],
     isBrLastStmt :: Bool,
     computedExprsStack :: [[(Latte.Abs.Expr, String)]],
+    -- declaredVariablesInBlock :: [Map String (Type,String)],
     arguments :: Map String Type,
     stringPool :: Map String Int,
     returnReached :: Bool,
@@ -175,6 +176,21 @@ getNextVariableAndUpdate = do
   modify $ \s -> s { variablesCounter = counter + 1 }
   return ("." ++ show counter)
 
+-- pushDeclaredVariablesFrame :: LCS ()
+-- pushDeclaredVariablesFrame = modify $ \s -> s { declaredVariablesInBlock = Map.empty : declaredVariablesInBlock s }
+
+-- popDeclaredVariablesFrame :: LCS ()
+-- popDeclaredVariablesFrame = modify $ \s -> s {
+--   declaredVariablesInBlock = case declaredVariablesInBlock s of
+--       (_:rest) -> rest
+--       [] -> []
+--   }
+
+-- addDeclaredVariableToFrame :: String -> Type -> String  -> LCS ()
+-- addDeclaredVariableToFrame varName varType llvmVarName = modify $ \s ->
+--   let (currentFrame:rest) = declaredVariablesInBlock s
+--   in s { declaredVariablesInBlock = Map.insert varName (varType, llvmVarName) currentFrame : rest }
+
 -----------------------------
 --EXPRESSIONS STACK SEGMENT--
 -----------------------------
@@ -235,20 +251,30 @@ isExprEqual expr1 expr2 = case (expr1, expr2) of
     expr11EqExpr21 <- isExprEqual expr11 expr21
     expr12EqExpr22 <- isExprEqual expr12 expr22
     let opEq = compareLatteAddOp op1 op2
-    return $ expr11EqExpr21 && expr12EqExpr22 && opEq
+    expr11EqExpr22 <- isExprEqual expr11 expr22
+    expr12EqExpr21 <- isExprEqual expr12 expr21
+    return $ ((expr11EqExpr21 && expr12EqExpr22) || (expr11EqExpr22 && expr12EqExpr21 ))  && opEq
   (Latte.Abs.EMul _ expr11 op1 expr12, Latte.Abs.EMul _ expr21 op2 expr22) -> do
     expr11EqExpr21 <- isExprEqual expr11 expr21
     expr12EqExpr22 <- isExprEqual expr12 expr22
     let opEq = compareLatteMulOp op1 op2
-    return $ expr11EqExpr21 && expr12EqExpr22 && opEq
+    expr11EqExpr22 <- isExprEqual expr11 expr22
+    expr12EqExpr21 <- isExprEqual expr12 expr21
+    return $ (expr11EqExpr21 && expr12EqExpr22 && opEq) || (expr11EqExpr22 && expr12EqExpr21 && opEq && isOpMul op1)
   (Latte.Abs.EAnd _ expr11 expr12, Latte.Abs.EAnd _ expr21 expr22) -> do
     expr11EqExpr21 <- isExprEqual expr11 expr21
     expr12EqExpr22 <- isExprEqual expr12 expr22
-    return $ expr11EqExpr21 && expr12EqExpr22
+    expr11EqExpr22 <- isExprEqual expr11 expr22
+    expr12EqExpr21 <- isExprEqual expr12 expr21
+    return $ ((expr11EqExpr21 && expr12EqExpr22) || (expr11EqExpr22 && expr12EqExpr21 ))
+    -- return $ expr11EqExpr21 && expr12EqExpr22
   (Latte.Abs.EOr _ expr11 expr12, Latte.Abs.EOr _ expr21 expr22) -> do
     expr11EqExpr21 <- isExprEqual expr11 expr21
     expr12EqExpr22 <- isExprEqual expr12 expr22
-    return $ expr11EqExpr21 && expr12EqExpr22
+    expr11EqExpr22 <- isExprEqual expr11 expr22
+    expr12EqExpr21 <- isExprEqual expr12 expr21
+    return $ ((expr11EqExpr21 && expr12EqExpr22) || (expr11EqExpr22 && expr12EqExpr21 ))
+    -- return $ expr11EqExpr21 && expr12EqExpr22
   (Latte.Abs.Neg _ expr1, Latte.Abs.Neg _ expr2) -> isExprEqual expr1 expr2
   (Latte.Abs.Not _ expr1, Latte.Abs.Not _ expr2) -> isExprEqual expr1 expr2
   (Latte.Abs.ERel _ expr11 op1 expr12, Latte.Abs.ERel _ expr21 op2 expr22) -> do
@@ -359,7 +385,7 @@ createVariableWithExprToReduce expr = do
   case maybeVar of
     Just varName -> return varName
     Nothing -> do
-      let varName = "doNotUseThatName_reducedVariable" ++ show (reducedVariablesCounter s)
+      let varName = "_reducedVariable" ++ show (reducedVariablesCounter s)
       modify $ \s -> s { reducedVariablesCounter = reducedVariablesCounter s + 1 }
       modify $ \s -> s { exprsToReduceStack = Map.insert expr varName topFrame : frames }
       return varName
@@ -943,7 +969,9 @@ formatInductionVariables = do
           Just (_, reg) -> return $ "("++reg ++ " (" ++ name ++ ") changes by " ++ show change ++ " in each iteration)"
           Nothing -> throwError $ "Variable not defined: " ++ name ++ " (in formatInductionVariables)"
 
+--------------------------
 --REDUCE EXPR SUBSEGMENT--
+--------------------------
 reduceExpr :: Latte.Abs.Expr -> LCS Latte.Abs.Expr
 reduceExpr node = case node of
   Latte.Abs.EAdd p l op r -> do
@@ -1345,7 +1373,8 @@ instance CompileExpr Latte.Abs.Expr where
     Latte.Abs.EAdd p l op r -> do
       lookupExpr <- lookupExprsFrame node
       case lookupExpr of
-        Just llvmVarName -> return $ "%" ++ llvmVarName
+        Just llvmVarName -> do
+          return $ "%" ++ llvmVarName
         Nothing -> do
           l' <- compilerExpr l
           r' <- compilerExpr r
@@ -1597,12 +1626,14 @@ instance Compile Latte.Abs.Stmt where
     else case stmt of
       Latte.Abs.Empty _ -> return ()
       Latte.Abs.BStmt _ block -> do
-        pushExprsFrame
+        -- w GCSE jak wychodzimy z bloku to nie chcemy tracić exprs z tego bloku, bo wiemy, że są one osiągalne. 
+        -- W przypadku bloku w if i while, to i tak pushujemy nowy blok, więc nie ma problemu
+        -- pushExprsFrame
         pushVariablesFrame
         modify $ \s -> s { returnReached = False }
         compile block
         popVariablesFrame
-        popExprsFrame
+        -- popExprsFrame
       Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
         Latte.Abs.NoInit _ ident -> do
           let varName = name ident
