@@ -72,7 +72,7 @@ createEAdd :: Latte.Abs.BNFC'Position -> Latte.Abs.Ident -> Integer -> Latte.Abs
 createEAdd pos ident num =
     let varExpr = Latte.Abs.EVar pos ident
         intExpr = Latte.Abs.ELitInt pos num
-        addOp = if num >= 0 then Latte.Abs.Plus pos else Latte.Abs.Minus pos
+        addOp = Latte.Abs.Plus pos
     in Latte.Abs.EAdd pos varExpr addOp intExpr
 
 getRelOp :: Latte.Abs.RelOp' a -> String

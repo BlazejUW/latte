@@ -19,9 +19,7 @@ import Data.List (intercalate)
 import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, removeLeadingPercent,
   typeToLlvmKeyword, convertToLlvmChar, convertELitIntToInt, convertListOfStmtToBlockBody, createEAdd, convertToLlvmString)
-import Data.Void (Void)
 import Text.Read (readMaybe)
-import qualified Distribution.Simple as Latte
 
 -------------------------------------------------
 ------------------STATE SECTION------------------
@@ -36,7 +34,7 @@ data CompilerState = CompilerState
     functionsSignatures :: Map (Latte.Abs.Ident, [Type]) Type,
     exprTypes :: Map Latte.Abs.Expr Type,
     inlineFunctions :: Map (Latte.Abs.Ident, [Type]) (Type, [Latte.Abs.Arg], Latte.Abs.Block),
-    inlineFunctionsReturnStack :: [Map String String], -- (nazwa labelki, nazwa rejestru zwracającego wartość)
+    inlineFunctionsReturnStack :: [Map String String], -- (label name, register with result name)
     inlineFunctionsToken :: Int,
     inlineFunctionsLabelsStack :: [String],
     currentInlineFunctionType :: Type,
@@ -49,13 +47,11 @@ data CompilerState = CompilerState
     concatWasDeclared :: Bool,
     phiNodesStack :: [Map String (Type,String)],
     labelsStack :: [String],
-    inductionVariablesStack :: [Map String (Bool, Int)], -- (nazwa, (czy jest zmienną indukcyjną, const które będziemy dodawać))
-    visitedInductionVariables :: [[String]],
+    inductionVariablesStack :: [Map String (Bool, Int)], -- (name: (isIV, loopConstant))
     tokenWhile :: Int,
     exprsToReduceStack :: [Map Latte.Abs.Expr String], -- expr: nameToThisExpr
     variablesWithReducedExprStack :: [Map String (String,Int)], -- nameOfReducedExpr: number to add
     reducedVariablesCounter :: Int
-    
   }
   deriving (Eq, Ord, Show)
 
@@ -382,20 +378,19 @@ createDeclItem :: (Latte.Abs.Expr, String) -> Latte.Abs.Item
 createDeclItem (expr, varName) = do
   Latte.Abs.Init Latte.Abs.BNFC'NoPosition (Latte.Abs.Ident varName) expr
 
+createMapFromList :: [(String, Latte.Abs.Stmt)] -> Map String [Latte.Abs.Stmt]
+createMapFromList = foldl insertStmt Map.empty
+  where
+    insertStmt m (k, v) = Map.insertWith (++) k [v] m
+
 createAssignmentBlockWithReducedExpression :: LCS [(String,Latte.Abs.Stmt)]
 createAssignmentBlockWithReducedExpression = do
   frames <- gets exprsToReduceStack
   case frames of
     (topFrame:_) -> do
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Ass block. Frames: " ++ (show frames)] }
       let items = Map.toList topFrame
       mapM createNewAssignmentForReducedVariable items
     _ -> return []
-
-createMapFromList :: [(String, Latte.Abs.Stmt)] -> Map String [Latte.Abs.Stmt]
-createMapFromList = foldl insertStmt Map.empty
-  where
-    insertStmt m (k, v) = Map.insertWith (++) k [v] m
 
 createNewAssignmentForReducedVariable :: (Latte.Abs.Expr, String) -> LCS (String, Latte.Abs.Stmt)
 createNewAssignmentForReducedVariable (expr, name) = do
@@ -406,7 +401,7 @@ createNewAssignmentForReducedVariable (expr, name) = do
     Just (iv,number) -> do
       let num = fromIntegral number
       let add = createEAdd p ident num
-      return $ (iv,Latte.Abs.Ass p ident add)
+      return (iv,Latte.Abs.Ass p ident add)
     Nothing -> error $ "Something went wrong in function createNewAssignmentForReducedVariable with variable" ++ name
 
 ------------------------
@@ -464,9 +459,6 @@ isAnyTokenWhileUp = do
 commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> String -> 
           String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
 commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
-    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; First rotation of loop number " ++ show counter ++ ":"] }
-    -- ifStmt <- createFirstWhileRotationAsCond p expr oldStmt
-    -- compile ifStmt
     tokenWhileUp
     pushPhiNodesFrame
     originalReturnFlag <- gets returnReached
@@ -795,40 +787,6 @@ addInductionVariableToFrame varName val = modify $ \s ->
   let (currentFrame:rest) = inductionVariablesStack s
   in s { inductionVariablesStack = Map.insert varName (True, val) currentFrame : rest }
 
-pushVisitedInductionVariablesFrame :: LCS ()
-pushVisitedInductionVariablesFrame = modify $ \s -> s { visitedInductionVariables = [] : visitedInductionVariables s }
-
-popVisitedInductionVariablesFrame :: LCS ()
-popVisitedInductionVariablesFrame = modify $ \s -> s {
-  visitedInductionVariables = case visitedInductionVariables s of
-      (_:rest) -> rest
-      [] -> []
-  }
-
-markInductionVariableAsVisited :: String -> LCS ()
-markInductionVariableAsVisited varName = do
-  maybeVar <- lookupForInductionVariableInTopFrame varName
-  visitedInductionVariablesFrames <- gets visitedInductionVariables
-  when (isJust maybeVar) $ do
-    case visitedInductionVariablesFrames of
-      (topFrame:rest) -> do
-        modify $ \s -> s { visitedInductionVariables = (varName:topFrame) : rest }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Marked as visited: " ++ varName] }
-        -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Visited induction variables: " ++ show (visitedInductionVariables s)] }
-      [] -> do
-        modify $ \s -> s { visitedInductionVariables = [[varName]] }
-        modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Oznaczyłem " ++ varName++ " jako odwiedzoną ale jest sama w liscie" ] }
-        
-
-checkIfInductionVariableWasVisited :: String -> LCS Bool
-checkIfInductionVariableWasVisited varName = do
-  visitedFrames <- gets visitedInductionVariables
-  case visitedFrames of
-    [] -> return False
-    (frame:rest) -> do
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Visited induction variables: " ++ show (frame)] }
-      return (varName `elem` frame)
-
 getValueOfInductionVariable :: String -> LCS (Maybe Int)
 getValueOfInductionVariable varName = do
   maybeVar <- lookupForInductionVariableInTopFrame varName
@@ -1027,7 +985,10 @@ reduceMul (Latte.Abs.EMul p l op r) node = do
     Latte.Abs.Times _ -> do
       case (reducedL, reducedR) of
         (Latte.Abs.ELitInt _ l, Latte.Abs.EVar _ r) -> reduceMulWithInduction reducedL reducedR node
-        (Latte.Abs.EVar _ l, Latte.Abs.ELitInt _ r) -> reduceMulWithInduction reducedR reducedL node     
+        (Latte.Abs.EVar _ l, Latte.Abs.ELitInt _ r) -> reduceMulWithInduction reducedR reducedL node   
+        (Latte.Abs.ELitInt _ l, Latte.Abs.ELitInt _ r) -> do
+          let number = l * r
+          return $ Latte.Abs.ELitInt p number
         _ -> return $ Latte.Abs.EMul p reducedL op reducedR
     _ -> return $ Latte.Abs.EMul p reducedL op reducedR
 
@@ -1035,7 +996,6 @@ reduceMulWithInduction :: Latte.Abs.Expr -> Latte.Abs.Expr -> Latte.Abs.Expr -> 
 reduceMulWithInduction (Latte.Abs.ELitInt p1 l) (Latte.Abs.EVar p2 r) node = do
   isIV <- checkIfThisVarIsInduction (name r)
   if isIV then do
-    -- modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Dodaję do expr reduction wyrazenie: " ++ name r ++ " * " ++ show l] }
     newVar <- createVariableWithExprToReduce node
     ivVal <- getValueOfInductionVariable (name r)
     valueToNewVar <- case ivVal of
@@ -1044,19 +1004,7 @@ reduceMulWithInduction (Latte.Abs.ELitInt p1 l) (Latte.Abs.EVar p2 r) node = do
         addVariableWithReducedExprToFrame newVar (name r) number
         return ()
       Nothing -> error "Something went wrong with reduceMulWithInduction"
-    -- wasVisited <- checkIfInductionVariableWasVisited (name r)
-    -- if wasVisited then do
     return (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar))
-    -- else do
-    --   val <- getValueOfInductionVariable (name r)
-    --   case val of
-    --     Just val -> do
-    --       --przenieś do po dekrementacji
-    --       let minus = Latte.Abs.Minus p1
-    --       let subVal = Latte.Abs.ELitInt p1 (fromIntegral val)
-    --       let subExpr = Latte.Abs.EAdd p1 (Latte.Abs.EVar p1 (Latte.Abs.Ident newVar)) minus subVal
-    --       return subExpr
-    --     Nothing -> error "Something went wrong with reduceMulWithInduction"
   else return node
 
 replaceExprsInStmtToReduced :: Latte.Abs.Stmt -> LCS (Maybe Latte.Abs.Stmt)
@@ -1078,9 +1026,6 @@ replaceExprsInStmtToReduced stmt =
       let varName = name ident
       isIV <- checkIfThisVarIsInduction varName
       if isIV then do
-        case e of
-          Latte.Abs.EVar _ _ -> return () 
-          _ -> markInductionVariableAsVisited varName
         return (Just stmt)
       else do
         newExpr <- reduceExpr e
@@ -1105,16 +1050,16 @@ replaceExprsInStmtToReduced stmt =
       newExpr <- reduceExpr e
       return $ Just $ Latte.Abs.While p newExpr s
     Latte.Abs.Incr p ident -> do 
-      markInductionVariableAsVisited (name ident)
       return $ Just stmt
     Latte.Abs.Decr p ident -> do
-      markInductionVariableAsVisited (name ident)
       return $ Just stmt
     Latte.Abs.Ret p expr -> do
       newExpr <- reduceExpr expr
       return $ Just $ Latte.Abs.Ret p newExpr
     Latte.Abs.VRet p -> return $ Just stmt
-    _ -> return $ Just stmt
+    Latte.Abs.SExp p expr -> do
+        newExpr <- reduceExpr expr
+        return $ Just $ Latte.Abs.SExp p newExpr
 
 replaceExprsToReducedInBlock  :: Latte.Abs.Block  -> LCS  ([Maybe Latte.Abs.Stmt])
 replaceExprsToReducedInBlock  (Latte.Abs.Block _ stmts) = do
@@ -1826,7 +1771,9 @@ instance Compile Latte.Abs.Stmt where
         newBody <- replaceBodyOfWhileWithReduction stmt
         decl <- createDeclToReducedExprs
         case decl of
-          Just decl -> compile decl
+          Just decl -> do
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Declaration(s) of variables which reduce multiplication in while loop:"] }
+            compile decl
           Nothing -> return ()
         let condLabel = "while_cond_" ++ show counter
         let bodyLabel = "while_body_" ++ show counter
@@ -1923,7 +1870,6 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       inductionVariablesStack = [],
       tokenWhile = 0,
       isBrLastStmt = False,
-      visitedInductionVariables = [],
       exprsToReduceStack = [],
       variablesWithReducedExprStack = [],
       reducedVariablesCounter = 0
