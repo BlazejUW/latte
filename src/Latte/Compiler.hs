@@ -1681,6 +1681,7 @@ instance Compile Latte.Abs.Stmt where
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
             varsInCaseOfReturnBeforeIf <- gets variablesStack
             phiInCaseOfReturnBeforeIf <- gets phiNodesStack
+            exprsFrameBeforeIf <- gets computedExprsStack
             pushExprsFrame
             pushLabelToStack trueLabel
             pushPhiNodesFrame
@@ -1701,6 +1702,7 @@ instance Compile Latte.Abs.Stmt where
             pushLabelToStack endLabel
             modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
+            modify $ \s -> s { computedExprsStack = exprsFrameBeforeIf }
             if not returnFlag then do
               case phiFrameAfterIf of
                 (phiFrameAfter:_) -> do
@@ -1742,17 +1744,18 @@ instance Compile Latte.Abs.Stmt where
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel] }
             isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
             -- true branch
-            pushExprsFrame
             pushPhiNodesFrame
             pushLabelToStack trueLabel
             originalReturnFlag <- gets returnReached
             variableStackBeforeTrueBranch <- gets variablesStack
+            exprsFrameBeforeTrueBranch <- gets computedExprsStack
+            pushExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
             compile stmt1
             returnFlag1 <- gets returnReached
             popExprsFrame
-            modify $ \s -> s { variablesStack = variableStackBeforeTrueBranch }
+            modify $ \s -> s { variablesStack = variableStackBeforeTrueBranch, computedExprsStack = exprsFrameBeforeTrueBranch }
             topLabelAfterTrueBranch <- getTopLabel
             phiFrameAfterTrueBranch <- getTopPhiFrame
             popPhiNodesFrame
@@ -1760,17 +1763,18 @@ instance Compile Latte.Abs.Stmt where
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             -- false branch
             variableStackBeforeFalseBranch <- gets variablesStack
+            exprsFrameBeforeFalseBranch <- gets computedExprsStack
             pushExprsFrame
             pushPhiNodesFrame
             pushLabelToStack falseLabel
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
             compile stmt2
-            modify $ \s -> s { variablesStack = variableStackBeforeFalseBranch }
+            popExprsFrame
+            modify $ \s -> s { variablesStack = variableStackBeforeFalseBranch, computedExprsStack = exprsFrameBeforeFalseBranch }
             returnFlag2 <- gets returnReached
             topLabelAfterFalseBranch <- getTopLabel
             phiFrameAfterFalseBranch <- getTopPhiFrame
-            popExprsFrame
             -- end
             if isItInInlineFunction then do
               --To mozna zwinac do jednego case
