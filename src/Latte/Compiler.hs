@@ -1581,8 +1581,6 @@ instance Compile Latte.Abs.TopDef where
       when (not returnFlag && retType == Void) $ modify $ \s -> s { compilerOutput = compilerOutput s ++ ["ret void"] }
       modify $ \s -> s { compilerOutput = compilerOutput s ++ ["}"]}
       modify $ \s -> s { labelsStack = [], labelsUsedInReturn = [], variablesStack = [], computedExprsStack = [], phiNodesStack = [] }
-      -- popVariablesFrame
-      -- popExprsFrame
 
 instance Compile Latte.Abs.Block where
   compile (Latte.Abs.Block _ stmts) = do
@@ -1689,7 +1687,7 @@ instance Compile Latte.Abs.Stmt where
                   isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
                   when isItInInlineFunction $ do
                     dummy <- putDummyRegister
-                    modify $ \s -> s { isBrLastStmt = False } --FIXME TERAAZ DODAŁEM
+                    modify $ \s -> s { isBrLastStmt = False }
                     when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
             else do
               modify $ \s -> s { variablesStack = varsInCaseOfReturnBeforeIf }
@@ -1764,7 +1762,6 @@ instance Compile Latte.Abs.Stmt where
                 modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
       Latte.Abs.While p expr stmt -> do
-        -- pushInductionVariablesFrame
         counter <- getNextLabelCounterAndUpdate
         pushInductionVariablesFrame
         pushReduceStacks

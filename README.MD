@@ -6,11 +6,11 @@ Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, któ
 3. Użycie rejestrów i phi zamiast alloc w LLVM: 2 pkt
 4. LCSE: 3 pkt
 5. function inlining: 3 pkt (wszystkie funkcje poza main i rekurancyjnymi są inlinowane)
+6. zmienne indukcyjne pętli i redukcja mocy: 2 pkt
 
-Aktualna maksymalna punktacja: 20 pkt
+Aktualna maksymalna punktacja: 22 pkt
 
 W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozszerzenia:
-* zmienne indukcyjne pętli i redukcja mocy: 2 pkt
 * GSCE: 2 pkt
 * tablice: 1 pkt
 * struktury: 2 pkt
@@ -50,11 +50,30 @@ Kolejnym etapem jest parsowanie, gdzie wczytany kod źródłowy jest przekształ
 3. Typechecking:
 Po zbudowaniu drzewa składniowego następuje etap typecheckingu, realizowany przez moduł Typechecker. Typechecker analizuje drzewo pod kątem poprawności typów, sprawdzając zgodność deklaracji i użycia zmiennych oraz funkcji. Sprawdza także obecność return w funkcjach. W tym etapie zbierane są informacje o napotkanych funkcjach oraz typach każdego wyrażenia. Informacje te są przechowywane w mapie exprTypes, umożliwiając łatwy dostęp do typów wyrażeń w trakcie kompilacji.
 4. Kompilacja:
-Właściwa kompilacja znajduje się w module Compiler. Polega na przetworzeniu drzewa składniowego w kod pośredni LLVM. Proces ten odbywa się poprzez rekursywne przechodzenie po drzewie składniowym i generowanie odpowiednich instrukcji LLVM. Znaczącą cechą implementacji jest brak użycia instrukcji alloca dla alokacji pamięci, co jest realizowane przez techniki znane z kompilacji SSA (Static Single Assignment). Zaimplemenotwane jest również zastępowanie napotkanego już kodu, co jest realizowane przez technikę LCSE (Local Common Subexpression Elimination). W trakcie kompilacji wykorzystywane są informacje o typach wyrażeń, które zostały zebrane w etapie typecheckingu. Przy napotkaniu nowego wyrażenia sprawdzam, czy było już ono wcześniej obliczane. Umożliwia mi to zaimplementowany mechanizm porównywania wyrażeń. Jeśli wyrażenie zostało już wcześniej obliczone, to zamiast jego obliczania, wstawiam do kodu LLVM instrukcję przypisania do zmiennej, która przechowuje wynik obliczenia tego wyrażenia. Dzięki temu unikam wielokrotnego obliczania tego samego wyrażenia, co przyspiesza działanie programu. Nie dodałem jednak zastępowania wyrażeń, które są wywołaniami funkcji, ponieważ w tym przypadku nie jestem w stanie sprawdzić, czy funkcja jest czysta, czy nie. 
+Właściwa kompilacja znajduje się w module Compiler. Polega na przetworzeniu drzewa składniowego w kod pośredni LLVM. Proces ten odbywa się poprzez rekursywne przechodzenie po drzewie składniowym i generowanie odpowiednich instrukcji LLVM. Znaczącą cechą implementacji jest brak użycia instrukcji alloca dla alokacji pamięci, co jest realizowane przez techniki znane z kompilacji SSA (Static Single Assignment). W trakcie kompilacji wykorzystywane są informacje o typach wyrażeń, które zostały zebrane w etapie typecheckingu. Przy napotkaniu nowego wyrażenia sprawdzam, czy było już ono wcześniej obliczane. **Poniżej umieszczam szczegóły implementacyjne i algorytmiczne zrobionych przeze mnie optymalizacji**.
 * Obsługa Pętli while:
-W przypadku pętli while, stosowana jest specyficzna technika polegająca na dwukrotnym przejściu przez pętlę. Pierwsze przejście służy do identyfikacji tych zmiennych, które w bloku zmieniają swoją wartość, następnie umieszczam blok phi na początku pętli. Po pierwszym przejściu przywracam stan sprzed "sztucznego" przejścia. Drugi obrót realizuje właściwą kompilację pętli. Docelowo zamierzam wykorzystać tę technikę do implementacji optymalizacji pętli, czyli dodanie zmiennych indukcyjnych i redukcji mocy.
+W przypadku pętli while, stosowana jest technika polegająca na dwukrotnym przejściu przez pętlę. Pierwsze przejście służy do identyfikacji tych zmiennych, które w bloku zmieniają swoją wartość, następnie umieszczam blok phi na początku pętli. Po pierwszym przejściu przywracam stan sprzed "sztucznego" przejścia. Drugi obrót realizuje właściwą kompilację pętli. Wcześniej analizuje także występujące w ciele funkcji wyrażenia i podwyrażenia, które kwalifikują się do redukcji mocy oraz zmienne indukcyjne.
 5. Struktura kompilatora:
-Cała napisane przeze mnie logika kompilacji jest umieszczona w modułach Compiler, Typechecker, i RunCompile, a struktura programu jest zorganizowana w sposób umożliwiający łatwe śledzenie procesu kompilacji od parsowania po generację kodu pośredniego LLVM.
+Cała napisane przeze mnie logika kompilacji jest umieszczona w modułach Compiler, Typechecker, i RunCompile, a struktura programu jest zorganizowana w sposób umożliwiający łatwe śledzenie procesu kompilacji od parsowania po generację kodu pośredniego LLVM. W pliku Helpers.hs trzymam niemonadyczne funkcje używane w modułach kompilatora.
+
+
+## Opis realizacji optymalizacji
+### LCSE
+W trakcie kompilacji wykorzystywane są informacje o typach wyrażeń, które zostały zebrane w etapie typecheckingu. Przy napotkaniu nowego wyrażenia sprawdzam, czy było już ono wcześniej obliczane. Umożliwia mi to zaimplementowany mechanizm porównywania wyrażeń. Jeśli wyrażenie zostało już wcześniej obliczone, to zamiast jego obliczania, wstawiam do kodu LLVM instrukcję przypisania do zmiennej, która przechowuje wynik obliczenia tego wyrażenia. Dzięki temu unikam wielokrotnego obliczania tego samego wyrażenia, co przyspiesza działanie programu. Nie dodałem jednak zastępowania wyrażeń, które są wywołaniami funkcji, ponieważ w tym przypadku nie jestem w stanie sprawdzić, czy funkcja jest czysta, czy nie. Po zobaczeniu instrukcji przypisania do zmiennej usuwam ze zbioru wyrażeń wszystkie te, które były powiązane z tą zmienną, co zapewnia mi, że nie zastąpię wyrażenia innym, które jest już nieaktualne. 
+W aktualnej wersji kompilatora ramka LCSE jest czyszczona po wyjściu z bloku. 
+### Function inlining
+Na etapie typecheckingu zbieram informacje o tym, jakie funkcje są wywoływane w ciele każdej z funkcji. Tworzę skierowany graf wywołań, w którym węzłami są funkcje a krawędziami wywołania. Następnie szukam w tym grafie cykli. Początkowo zakładam, że wszystkie funkcje są inlinowalne. Gdy znajdę cykl usuwam ze zbioru funkcji inlinowanych wszyskite funkcje z tego cyklu. Pozwala mi to zapobiec inlinowaniu funkcji rekurencyjnych i wzajemnie rekurencyjnych. Przekazuję do kompilatora informacje o tym, które funkcje są inlinowalne i gdy w trakcie kompilacji napotkam wywołanie funkcji, to sprawdzam, czy jest ona inlinowalna. Jeśli tak, to wstawiam do kodu LLVM kod funkcji, którą wywołuje, a jeśli nie, to wstawiam instrukcję wywołania funkcji. Kod funkcji inlinowalnej różni się tym, że nie zwraca nic przez return. Po napotkaniu takiej instrukcji (trochę inny mechanizm w przypadku if) wstawiam instrukcję skoku do końca funkcji inlinowanej. 
+### Zmienne indukcyjne pętli i redukcja mocy
+- **⁠Zmienne indukcyjne pętli**:
+W celu zidentyfikowania zmiennych indukcyjnych przechodzę przez ciało pętli w poszukiwaniu statemeantów, które są postaci ``i = i + C`` lub ``i++`` lub ``i--``, gdzie i to identyfikator zmiennej, a C jakaś stała. Zgodnie z definicją z zajęć, przypisanie na zmienną indukcyjną może odbywać się dokładnie raz. W myśl tej zasady, jeśli napotkam drugie przypisanie do zmiennej indukcyjnej, to usuwam ją ze zbioru zmiennych indukcyjnych. Usuwam ze zbioru także każdą zmienną indukcyjną, która wystąpiła w bloku if lub ifelse, bo nie mam pewności, czy pojawi się dokładnie raz i będzie w ten sam sposób inkrementowana. ⁠
+- **Redukcja mocy**:
+W moim kompilatorze redukuję każde wyrażenie i podwyrażenie, które kwalifikuje się do redukcji, czyli takie, które jest postaci ``A*i``, gdzie A to stała, a i to zmienna indukcyjna. Gdy posiadam już informację o zmiennych indukcyjnych danej pętli, rozpoczynam poszukiwania wyrażeń i podwyrażeń do redukcji. W tym celu rekurencyjnie rozważam każde wyrażenie używane w pętli (poza przypadkiem zagnieżdżonej pętli while, która to posiada swój własny stos redukcji). Jeśli napotkam wyrażenie, które kwalifikuje się do redukcji, to zapisuje to wyrażenie do przetworzenia, przypisuję mu nową zmienną redukcyjną i zastępuje to wyrażenie wyrażeniem EVar z tą zmienną. Po przejściu całego ciała pętli tworzę blok deklaracji zmiennych redukcyjnych, który umieszczam przed pętlą while. Zmienne redukcyjne są zainicjalizowane na wyrażenie, które zastąpiły. Na przykład, jeśli znaleźliśmy wyrażenie i*4, to tworzymy nową zmienną redukcyjną, powiedzmy k, i przed ciałem pętli umieścimy:
+``
+int k = i*4;
+``
+Samo mnożenie zredukowane dodawaniem zapisujemy zaraz po inkrementacji zmiennej indukcyjnej. Jeśli zmienna indukcyjna wyglądała i = i + A, a zmienna redukcyjna ``k = i*B``, to po napotkaniu instrukcji ``i = i+ A`` umieszczamy przypisanie: ``k = k + A*B``, gdzie A*B to stała, którą wymnażamy na etapie kompilacji.
+
+
 ## Środowisko
 * Haskell: Program został napisany w języku Haskell. Do jego kompilacji i uruchomienia potrzebne jest środowisko Haskell, w tym kompilator GHC (Glasgow Haskell Compiler).
 ## Używane Narzędzia i Biblioteki
