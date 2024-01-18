@@ -37,6 +37,7 @@ data CompilerState = CompilerState
     inlineFunctionsReturnStack :: [Map String String], -- (label name, register with result name)
     inlineFunctionsToken :: Int,
     inlineFunctionsLabelsStack :: [String],
+    inlineReturnReached :: Bool,
     currentInlineFunctionType :: Type,
     labelsUsedInReturn :: [String],
     isBrLastStmt :: Bool,
@@ -295,7 +296,6 @@ isExprEqual expr1 expr2 = case (expr1, expr2) of
 
 lookupExprsStack :: Latte.Abs.Expr -> LCS (Maybe String)
 lookupExprsStack expr = do
-  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Looking for expr in stack: " ++ show expr] }
   frames <- gets computedExprsStack
   searchExprsStack frames expr
 
@@ -309,7 +309,6 @@ searchExprsStack (frame:rest) exprToSearch = do
 
 lookupExprsFrame :: Latte.Abs.Expr -> LCS (Maybe String)
 lookupExprsFrame expr = do
-  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Looking for expr: " ++ show expr] }
   frames <- gets computedExprsStack
   topFrame <- case frames of
     (topFrame:_) -> do
@@ -356,7 +355,7 @@ mergeTopFrameInElseIf = do
     [topFrame] -> do
       modify $ \s -> s { computedExprsStack = [topFrame] }
     _ -> do
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; No frames to merge JAKIMS CUDEM TU WSZEDLEM"] }
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; No exprs frames to merge at mergeTopFrameInElseIf"] }
       return ()
 
 mergeFrames :: [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] -> LCS [(Latte.Abs.Expr, String)]
@@ -394,10 +393,10 @@ updateStackWithCommonExprs :: [[(Latte.Abs.Expr, String)]] -> [[(Latte.Abs.Expr,
 updateStackWithCommonExprs [] [] = return []
 updateStackWithCommonExprs (ifFrame:ifRest) (elseFrame:elseRest) = do
   commonExprs <- findCommonExprs ifFrame elseFrame
-  let updatedIfFrame = updateFrameWithCommonExprs ifFrame commonExprs
-  let updatedElseFrame = updateFrameWithCommonExprs elseFrame commonExprs
+  -- let updatedIfFrame = updateFrameWithCommonExprs ifFrame commonExprs
+  -- let updatedElseFrame = updateFrameWithCommonExprs elseFrame commonExprs
   rest <- updateStackWithCommonExprs ifRest elseRest
-  return (updatedIfFrame : updatedElseFrame : rest)
+  return (commonExprs : rest)
 updateStackWithCommonExprs _ _ = error "Stacks do not match in size"
 
 updateFrameWithCommonExprs :: [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)]
@@ -787,7 +786,6 @@ popPhiNodesFrameAndMergeItIntoStack = do
         -- Teoretycznie, ten przypadek nie powinien mieć miejsca,
         -- ponieważ obsługujemy już wcześniej przypadek pojedynczej ramki
         _ -> return ()
-    -- Gdy stos jest pusty, dodaj topFrame
     [] -> modify $ \s -> s { phiNodesStack = [topFrame] }
 
 popPhiNodesFrame :: LCS ()
@@ -943,14 +941,15 @@ createPhiNodesAndUpdateFramesWithExprsAfterCondElse ifLabel elseLabel ifFrame el
   (phiNodes, updatedIfFrame, updatedElseFrame) <- foldM processExpr ([], ifFrame, elseFrame) ifFrame
   return (phiNodes, updatedIfFrame, updatedElseFrame)
   where
-    processExpr (accPhi, accIfFrame, accElseFrame) (expr, varNameIf) = do    
+    processExpr (accPhi, accIfFrame, accElseFrame) (expr, varNameIf) = do
       maybeVarNameElse <- searchExprsFrameAndLookupForExpr expr accElseFrame
+      exprType <- getExpressionType expr
       case maybeVarNameElse of
         Just varNameElse ->
           if varNameIf /= varNameElse then do
             phiCounter <- getNextPhiCounterAndUpdate
-            let phiLabel = "%phi_value_" ++ show phiCounter
-            let phiNode = phiLabel ++ " = phi [%" ++ varNameIf ++ ", %" ++ ifLabel ++ "] [%" ++ varNameElse ++ ", %" ++ elseLabel ++ "]"
+            let phiLabel = "phi_value_" ++ show phiCounter
+            let phiNode = "%" ++ phiLabel ++ " = phi " ++ typeToLlvmKeyword exprType ++ " [ %" ++ varNameIf ++ ", %" ++ ifLabel ++ " ], [ %" ++ varNameElse ++ ", %" ++ elseLabel ++ "] "
             let updatedIfFrame = replaceExprVarName expr phiLabel accIfFrame
             let updatedElseFrame = replaceExprVarName expr phiLabel accElseFrame
             return (phiNode : accPhi, updatedIfFrame, updatedElseFrame)
@@ -1356,7 +1355,7 @@ checkIfCodeIsInsideInlineFunction = do
 findLabelForThisInlineFunction :: LCS String
 findLabelForThisInlineFunction = do
   labelCouter <- getNextLabelCounterAndUpdate
-  let label = "inline_function_" ++ show labelCouter
+  let label = "end_inline_function_" ++ show labelCouter
   modify $ \s -> s { inlineFunctionsLabelsStack = label : inlineFunctionsLabelsStack s }
   return label
 
@@ -1375,13 +1374,13 @@ inlineFunctionCall ident argsRegisters argsTypes = do
   orifinalVariablesFrame <- gets variablesStack
   orifinalPhiNodesFrame <- gets phiNodesStack
   originalInlineFunctionsLabelsStack <- gets inlineFunctionsLabelsStack
-  pushExprsFrame
+  -- pushExprsFrame
   pushVariablesFrame
   pushInlineFunctionReturnFrame
   let functionName = name ident
   (retType,argsAbs,body) <- getInlineFunctionItems ident argsTypes
   originalType <- gets currentInlineFunctionType
-  modify $ \s -> s { currentInlineFunctionType = retType }
+  modify $ \s -> s { currentInlineFunctionType = retType, inlineReturnReached = False }
   addInlineFunctionArgumentsToFrame argsAbs argsRegisters argsTypes
   label <- findLabelForThisInlineFunction
   compile body
@@ -1395,18 +1394,20 @@ inlineFunctionCall ident argsRegisters argsTypes = do
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [label ++ ":"] }
     register <- putDummyRegister
     popLabelFromStack
-    popExprsFrame
+    -- popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
-    modify $ \s -> s { currentInlineFunctionType = originalType, returnReached = originalReturnFlag, computedExprsStack = orifinalExprsFrame,
+    modify $ \s -> s { currentInlineFunctionType = originalType, returnReached = originalReturnFlag,
+    computedExprsStack = orifinalExprsFrame,
     variablesStack = orifinalVariablesFrame, phiNodesStack = orifinalPhiNodesFrame, inlineFunctionsLabelsStack = originalInlineFunctionsLabelsStack }
     return register
   else do
     register <- handleReturnPhiBlockInInlineFunction retType label topLabel
-    popExprsFrame
+    -- popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
-    modify $ \s -> s { currentInlineFunctionType = originalType, returnReached = originalReturnFlag, computedExprsStack = orifinalExprsFrame,
+    modify $ \s -> s { currentInlineFunctionType = originalType, returnReached = originalReturnFlag,
+    computedExprsStack = orifinalExprsFrame,
     variablesStack = orifinalVariablesFrame, phiNodesStack = orifinalPhiNodesFrame, inlineFunctionsLabelsStack = originalInlineFunctionsLabelsStack }
     return register
 
@@ -1520,7 +1521,7 @@ instance CompileExpr Latte.Abs.Expr where
     Latte.Abs.ELitTrue _ -> return "1"
     Latte.Abs.ELitFalse _ -> return "0"
     Latte.Abs.EString _ str -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
@@ -1542,7 +1543,7 @@ instance CompileExpr Latte.Abs.Expr where
           addExprToFrame node ( nextIndirectVariable)
           return $ "%" ++  nextIndirectVariable
     Latte.Abs.EAdd p l op r -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> do
           return $ "%" ++ llvmVarName
@@ -1574,7 +1575,7 @@ instance CompileExpr Latte.Abs.Expr where
               return $ "%" ++  counter
             _ -> throwError $ "Cannot add two: " ++ show lType ++ " and " ++ show r ++ ", at " ++ errLocation p
     Latte.Abs.EMul p l op r -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
@@ -1589,7 +1590,7 @@ instance CompileExpr Latte.Abs.Expr where
           addExprToFrame node ( counter)
           return $ "%" ++  counter
     Latte.Abs.Neg p expr -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
@@ -1651,7 +1652,7 @@ instance CompileExpr Latte.Abs.Expr where
       addExprToFrame node ( resultVar)
       return $ "%" ++  resultVar
     Latte.Abs.Not p expr -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
@@ -1662,7 +1663,7 @@ instance CompileExpr Latte.Abs.Expr where
           addExprToFrame node ( counter)
           return $ "%" ++  counter
     Latte.Abs.ERel p l op r -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
@@ -1707,7 +1708,7 @@ instance CompileExpr Latte.Abs.Expr where
           return $ "%" ++ llvmVarName
         Nothing -> throwError $ "Variable not defined: " ++ varName ++ ", " ++ errLocation p
     Latte.Abs.EApp p ident exprs -> do
-      lookupExpr <- lookupExprsFrame node
+      lookupExpr <- lookupExprsStack node
       case lookupExpr of
         Just llvmVarName -> return $ "%" ++ llvmVarName
         Nothing -> do
@@ -1898,7 +1899,7 @@ instance Compile Latte.Abs.Stmt where
               when isItInInlineFunction $ do
                 dummy <- putDummyRegister
                 modify $ \s -> s { isBrLastStmt = False }
-                when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
+                -- when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
 
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
@@ -1923,7 +1924,6 @@ instance Compile Latte.Abs.Stmt where
             pushExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; expressions in true branch: " ++ show exprsFrameBeforeTrueBranch] }
             compile stmt1
             returnFlag1 <- gets returnReached
             exprFrameAfterTrueBranchBeforeDeleteDecls <- gets computedExprsStack
@@ -1953,34 +1953,28 @@ instance Compile Latte.Abs.Stmt where
             tfAElse <- getTopFrameOfDeclaredVariables
             exprFrameAfterFalseBranch <- removeDeclaredVariablesFromExprsStack exprFrameAfterFalseBranchBeforeDeleteDecls tfAElse
             popDeclaredVariablesFrame
-            -- pierwsze co trzeba zrobić to usunąć z topFrame te zmienne, które były zadeklarowane wewnątz ifa jeśli jest jakaś zmienna o tej nazwie w ramkach niżej
             phiWithExprsInBothFrames <- updateExprsStackAfterIfElse topLabelAfterTrueBranch topLabelAfterFalseBranch exprFrameAfterTrueBranch exprFrameAfterFalseBranch
-            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; phi with exprs in both frames: " ++show phiWithExprsInBothFrames] }
             mergeTopFrameInElseIf
-            -- popExprsFrame
             modify $ \s -> s { variablesStack = variableStackBeforeFalseBranch}
             returnFlag2 <- gets returnReached
             phiFrameAfterFalseBranch <- getTopPhiFrame
             -- end
-            if isItInInlineFunction then do
-              --To mozna zwinac do jednego case
-              unless (returnFlag1 && returnFlag2) $ do
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-                dummy <- putDummyRegister
+            unless (returnFlag1 && returnFlag2) $ do
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
+              modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+              phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
+              modify $ \s ->
+                let outputWithPhiBlock = compilerOutput s ++ phiBlock
+                    outputWithPhiAndExprs =
+                        if not (null phiWithExprsInBothFrames)
+                        then outputWithPhiBlock ++ ["; Expressions used in both branches of ifelse:"] ++ phiWithExprsInBothFrames
+                        else outputWithPhiBlock
+                in s { compilerOutput = outputWithPhiAndExprs }
+              when (isItInInlineFunction && ((null phiWithExprsInBothFrames) && (null phiBlock))) do
+                putDummyRegister
                 modify $ \s -> s { isBrLastStmt = False }
-                phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock ++ phiWithExprsInBothFrames}
-                pushLabelToStack endLabel
-                modify $ \s -> s { returnReached = originalReturnFlag}
-            else
-              unless (returnFlag1 && returnFlag2) $ do
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-                phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock ++ phiWithExprsInBothFrames}
-                pushLabelToStack endLabel
-                modify $ \s -> s { returnReached = originalReturnFlag}
+              pushLabelToStack endLabel
+              modify $ \s -> s { returnReached = originalReturnFlag}
             tokenIfElseDown
       Latte.Abs.While p expr stmt -> do
         counter <- getNextLabelCounterAndUpdate
@@ -2037,6 +2031,7 @@ instance Compile Latte.Abs.Stmt where
               addInlineFunctionReturnToFrame topLabel e
             endOfFunctionLabel <- getEndOfActualFunctionLabel
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endOfFunctionLabel], isBrLastStmt = True}
+            modify $ \s -> s { returnReached = True }
             return ()
         else do
           e <- compilerExpr expr
@@ -2076,6 +2071,7 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       inlineFunctionsReturnStack = [],
       inlineFunctionsToken = 0,
       inlineFunctionsLabelsStack = [],
+      inlineReturnReached = False,
       currentInlineFunctionType = Void,
       labelsUsedInReturn = [],
       computedExprsStack = [],
