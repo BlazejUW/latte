@@ -10,11 +10,11 @@
 module Latte.Compiler where
 
 import Control.Monad.Except (MonadError (throwError))
-import Control.Monad (forM, forM_, unless, when, zipWithM, foldM)
+import Control.Monad (forM, forM_, unless, when, zipWithM, foldM, filterM)
 import Control.Monad.State (StateT, execStateT, get, gets, modify, put)
 import Data.Map (Map, adjust, delete, insert)
 import qualified Data.Map as Map
-import Data.Maybe (isJust, catMaybes, fromMaybe)
+import Data.Maybe (isJust, catMaybes, fromMaybe, listToMaybe)
 import Data.List (intercalate)
 import qualified Latte.Abs
 import Latte.Helpers (Type (Boolean, Integer, String, Void), errLocation, functionName, keywordToType, name, typeToKeyword, removeLeadingPercent,
@@ -41,7 +41,7 @@ data CompilerState = CompilerState
     labelsUsedInReturn :: [String],
     isBrLastStmt :: Bool,
     computedExprsStack :: [[(Latte.Abs.Expr, String)]],
-    -- declaredVariablesInBlock :: [Map String (Type,String)],
+    declaredVariablesInIfElseBlock :: [Map String (Type,String)],
     arguments :: Map String Type,
     stringPool :: Map String Int,
     returnReached :: Bool,
@@ -50,6 +50,7 @@ data CompilerState = CompilerState
     labelsStack :: [String],
     inductionVariablesStack :: [Map String (Bool, Int)], -- (name: (isIV, loopConstant))
     tokenWhile :: Int,
+    tokenIfElse :: Int,
     exprsToReduceStack :: [Map Latte.Abs.Expr String], -- expr: nameToThisExpr
     variablesWithReducedExprStack :: [Map String (String,Int)], -- nameOfReducedExpr: number to add
     reducedVariablesCounter :: Int
@@ -73,14 +74,14 @@ getExpressionType expr = do
   case Map.lookup expr (exprTypes s) of
     Just t -> return t
     Nothing -> do
-      case expr of 
+      case expr of
         Latte.Abs.ELitInt _ _ -> do
           modify $ \s -> s { exprTypes = Map.insert expr Integer (exprTypes s) }
           return Integer
         Latte.Abs.EVar _ ident -> do
           let varName = name ident
           res <- lookupVariableWithReducedExpr varName
-          case res of 
+          case res of
             Just _ -> do
               modify $ \s -> s { exprTypes = Map.insert expr Integer (exprTypes s) }
               return Integer
@@ -176,20 +177,28 @@ getNextVariableAndUpdate = do
   modify $ \s -> s { variablesCounter = counter + 1 }
   return ("." ++ show counter)
 
--- pushDeclaredVariablesFrame :: LCS ()
--- pushDeclaredVariablesFrame = modify $ \s -> s { declaredVariablesInBlock = Map.empty : declaredVariablesInBlock s }
+pushDeclaredVariablesFrame :: LCS ()
+pushDeclaredVariablesFrame = modify $ \s -> s { declaredVariablesInIfElseBlock = Map.empty : declaredVariablesInIfElseBlock s }
 
--- popDeclaredVariablesFrame :: LCS ()
--- popDeclaredVariablesFrame = modify $ \s -> s {
---   declaredVariablesInBlock = case declaredVariablesInBlock s of
---       (_:rest) -> rest
---       [] -> []
---   }
+popDeclaredVariablesFrame :: LCS ()
+popDeclaredVariablesFrame = modify $ \s -> s {
+  declaredVariablesInIfElseBlock = case declaredVariablesInIfElseBlock s of
+      (_:rest) -> rest
+      [] -> []
+  }
 
--- addDeclaredVariableToFrame :: String -> Type -> String  -> LCS ()
--- addDeclaredVariableToFrame varName varType llvmVarName = modify $ \s ->
---   let (currentFrame:rest) = declaredVariablesInBlock s
---   in s { declaredVariablesInBlock = Map.insert varName (varType, llvmVarName) currentFrame : rest }
+getTopFrameOfDeclaredVariables :: LCS (Map String (Type, String))
+getTopFrameOfDeclaredVariables = gets $ \s -> case declaredVariablesInIfElseBlock s of
+  (topFrame:_) -> topFrame
+  _ -> Map.empty
+
+potentiallyAddDeclaredVariableToFrame :: String -> Type -> String  -> LCS ()
+potentiallyAddDeclaredVariableToFrame varName varType llvmVarName = do
+  s <- get
+  let variableExistsInStack = any (Map.member varName) (variablesStack s)
+  when variableExistsInStack $ do
+    let (currentFrame:rest) = declaredVariablesInIfElseBlock s
+    modify $ \s -> s { declaredVariablesInIfElseBlock = Map.insert varName (varType, llvmVarName) currentFrame : rest }
 
 -----------------------------
 --EXPRESSIONS STACK SEGMENT--
@@ -284,8 +293,23 @@ isExprEqual expr1 expr2 = case (expr1, expr2) of
     return $ expr11EqExpr21 && expr12EqExpr22 && opEq
   _ -> return False
 
+lookupExprsStack :: Latte.Abs.Expr -> LCS (Maybe String)
+lookupExprsStack expr = do
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Looking for expr in stack: " ++ show expr] }
+  frames <- gets computedExprsStack
+  searchExprsStack frames expr
+
+searchExprsStack :: [[(Latte.Abs.Expr, String)]] -> Latte.Abs.Expr -> LCS (Maybe String)
+searchExprsStack [] _ = return Nothing
+searchExprsStack (frame:rest) exprToSearch = do
+  result <- searchExprsFrame frame exprToSearch
+  case result of
+    Just llvmVarName -> return $ Just llvmVarName
+    Nothing -> searchExprsStack rest exprToSearch
+
 lookupExprsFrame :: Latte.Abs.Expr -> LCS (Maybe String)
 lookupExprsFrame expr = do
+  modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Looking for expr: " ++ show expr] }
   frames <- gets computedExprsStack
   topFrame <- case frames of
     (topFrame:_) -> do
@@ -310,6 +334,87 @@ removeExprsWithVarFromAllFrames varName = do
 
 removeExprsWithVarFromOneFrame :: String -> [(Latte.Abs.Expr, String)] -> LCS [(Latte.Abs.Expr, String)]
 removeExprsWithVarFromOneFrame varName frame = return $ filter (not . containsVar varName) frame
+
+findCommonExprs :: [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] -> LCS [(Latte.Abs.Expr, String)]
+findCommonExprs ifFrame elseFrame = do
+  filterM (isInBothFrames elseFrame) ifFrame
+
+isInBothFrames :: [(Latte.Abs.Expr, String)] -> (Latte.Abs.Expr, String) -> LCS Bool
+isInBothFrames frame (expr, _) = anyM (isExprEqual expr . fst) frame
+
+anyM :: Monad m => (a -> m Bool) -> [a] -> m Bool
+anyM p = foldr (\x acc -> p x >>= \res -> if res then return True else acc) (return False)
+
+mergeTopFrameInElseIf :: LCS ()
+mergeTopFrameInElseIf = do
+  s <- get
+  stack <- gets computedExprsStack
+  case stack of
+    (topFrame:nextFrame:rest) -> do
+      mergedFrame <- mergeFrames topFrame nextFrame
+      modify $ \s -> s { computedExprsStack = mergedFrame : rest }
+    [topFrame] -> do
+      modify $ \s -> s { computedExprsStack = [topFrame] }
+    _ -> do
+      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; No frames to merge JAKIMS CUDEM TU WSZEDLEM"] }
+      return ()
+
+mergeFrames :: [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] -> LCS [(Latte.Abs.Expr, String)]
+mergeFrames topFrame nextFrame = do
+  filteredNextFrame <- filterM (\(expr, _) -> not <$> anyMForMerge (isExprEqual expr . fst) topFrame) nextFrame
+  return $ topFrame ++ filteredNextFrame
+
+anyMForMerge :: Monad m => (a -> m Bool) -> [a] -> m Bool
+anyMForMerge p = foldr (\x acc -> p x >>= \res -> if res then return True else acc) (return False)
+
+getTopFrame :: [[(Latte.Abs.Expr, String)]] -> [(Latte.Abs.Expr, String)]
+getTopFrame stack = case stack of
+  (topFrame:_) -> topFrame
+  _ -> []
+
+updateExprsStackAfterIfElse:: String -> String -> [[(Latte.Abs.Expr, String)]] -> [[(Latte.Abs.Expr, String)]] -> LCS ([String])
+updateExprsStackAfterIfElse ifLabel elseLabel stackAfterIf stackAfterElse= do
+  s <- get
+  (phiNodes, updatedStackAfterIf, updatedStackAfterElse) <- updateFramesAfterCondElse ifLabel elseLabel stackAfterIf stackAfterElse
+  updatedStack <- updateStackWithCommonExprs updatedStackAfterIf updatedStackAfterElse
+  modify $ \s -> s { computedExprsStack = updatedStack }
+  return phiNodes
+
+updateFramesAfterCondElse :: String -> String -> [[(Latte.Abs.Expr, String)]] -> [[(Latte.Abs.Expr, String)]] -> LCS ([String], [[(Latte.Abs.Expr, String)]], [[(Latte.Abs.Expr, String)]])
+updateFramesAfterCondElse ifLabel elseLabel stackAfterIf stackAfterElse = do
+    (phiNodes, updatedStackAfterIf, updatedStackAfterElse) <- foldM (processFrames ifLabel elseLabel) ([], [], []) (zip stackAfterIf stackAfterElse)
+    return (phiNodes, reverse updatedStackAfterIf, reverse updatedStackAfterElse)
+
+processFrames :: String -> String -> ([String], [[(Latte.Abs.Expr, String)]], [[(Latte.Abs.Expr, String)]]) -> ([(Latte.Abs.Expr, String)], [(Latte.Abs.Expr, String)]) -> LCS ([String], [[(Latte.Abs.Expr, String)]], [[(Latte.Abs.Expr, String)]])
+processFrames ifLabel elseLabel (accPhi, accIf, accElse) (ifFrame, elseFrame) = do
+    (phiNodes, updatedIfFrame, updatedElseFrame) <- createPhiNodesAndUpdateFramesWithExprsAfterCondElse ifLabel elseLabel ifFrame elseFrame
+    return (phiNodes ++ accPhi, updatedIfFrame : accIf, updatedElseFrame : accElse)
+
+updateStackWithCommonExprs :: [[(Latte.Abs.Expr, String)]] -> [[(Latte.Abs.Expr, String)]] -> LCS [[(Latte.Abs.Expr, String)]]
+updateStackWithCommonExprs [] [] = return []
+updateStackWithCommonExprs (ifFrame:ifRest) (elseFrame:elseRest) = do
+  commonExprs <- findCommonExprs ifFrame elseFrame
+  let updatedIfFrame = updateFrameWithCommonExprs ifFrame commonExprs
+  let updatedElseFrame = updateFrameWithCommonExprs elseFrame commonExprs
+  rest <- updateStackWithCommonExprs ifRest elseRest
+  return (updatedIfFrame : updatedElseFrame : rest)
+updateStackWithCommonExprs _ _ = error "Stacks do not match in size"
+
+updateFrameWithCommonExprs :: [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)]
+updateFrameWithCommonExprs frame commonExprs = map (\(expr, var) -> case lookup expr commonExprs of
+  Just newVar -> (expr, newVar)
+  Nothing -> (expr, var)) frame
+
+removeDeclaredVariablesFromExprsStack :: [[(Latte.Abs.Expr, String)]] -> Map String (Type, String) -> LCS [[(Latte.Abs.Expr, String)]]
+removeDeclaredVariablesFromExprsStack exprsStack declaredVariablesFrame = do
+  case exprsStack of
+        (topFrame:rest) -> do
+          updatedExprsFrame <- foldM processVariable topFrame (Map.keys declaredVariablesFrame)
+          return $ updatedExprsFrame : rest
+        _ -> return exprsStack
+
+processVariable :: [(Latte.Abs.Expr, String)] -> String -> LCS [(Latte.Abs.Expr, String)]
+processVariable frame varName = removeExprsWithVarFromOneFrame varName frame
 
 containsVar :: String -> (Latte.Abs.Expr, String) -> Bool
 containsVar varName (expr, _) = checkExpr expr
@@ -482,7 +587,7 @@ isAnyTokenWhileUp = do
   s <- get
   return $ tokenWhile s > 0
 
-commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> String -> 
+commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> String ->
           String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
 commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     tokenWhileUp
@@ -533,11 +638,15 @@ fakeInitInsteadOfAlloca :: String -> Type -> String -> Latte.Abs.Expr' a -> Bool
 fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case expr of
   Latte.Abs.ELitInt _ _ -> do
     addCounter <- getNextVariableAndUpdate
+
     let addInstr = "%" ++ addCounter ++ " = add " ++ typeToLlvmKeyword varType ++ " 0, " ++ exprString
     if isItAssignment then do
       updateVariableInStack varName varType addCounter
       addPhiNodeToFrame varName varType addCounter
     else do
+      inIfElse <- isAnyTokenIfElseUp
+      when inIfElse $ do
+        potentiallyAddDeclaredVariableToFrame varName varType addCounter
       addVariableToFrame varName varType addCounter
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitTrue _ -> do
@@ -547,6 +656,9 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
       updateVariableInStack varName varType ( addCounter)
       addPhiNodeToFrame varName varType ( addCounter)
     else do
+      inIfElse <- isAnyTokenIfElseUp
+      when inIfElse $ do
+        potentiallyAddDeclaredVariableToFrame varName varType addCounter
       addVariableToFrame varName varType ( addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.ELitFalse _ -> do
@@ -556,6 +668,9 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
       updateVariableInStack varName varType ( addCounter)
       addPhiNodeToFrame varName varType ( addCounter)
     else do
+      inIfElse <- isAnyTokenIfElseUp
+      when inIfElse $ do
+        potentiallyAddDeclaredVariableToFrame varName varType addCounter
       addVariableToFrame varName varType ( addCounter)
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
   Latte.Abs.EVar _ ident -> do
@@ -571,6 +686,9 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
                 updateVariableInStack varName varType (removeLeadingPercent exprString)
                 addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
               else do
+                inIfElse <- isAnyTokenIfElseUp
+                when inIfElse $ do
+                  potentiallyAddDeclaredVariableToFrame varName varType (removeLeadingPercent exprString)
                 addVariableToFrame varName varType (removeLeadingPercent exprString)
             _ -> do
               addCounter <- getNextVariableAndUpdate
@@ -579,6 +697,9 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
                 updateVariableInStack varName varType ( addCounter)
                 addPhiNodeToFrame varName varType ( addCounter)
               else do
+                inIfElse <- isAnyTokenIfElseUp
+                when inIfElse $ do
+                  potentiallyAddDeclaredVariableToFrame varName varType addCounter
                 addVariableToFrame varName varType ( addCounter)
               modify $ \s -> s { compilerOutput = compilerOutput s ++ [addInstr] }
     else do
@@ -586,12 +707,18 @@ fakeInitInsteadOfAlloca varName varType exprString expr isItAssignment = case ex
         updateVariableInStack varName varType (removeLeadingPercent exprString)
         addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
       else do
+        inIfElse <- isAnyTokenIfElseUp
+        when inIfElse $ do
+          potentiallyAddDeclaredVariableToFrame varName varType (removeLeadingPercent exprString)
         addVariableToFrame varName varType (removeLeadingPercent exprString)
   _ -> do
     if isItAssignment then do
       updateVariableInStack varName varType (removeLeadingPercent exprString)
       addPhiNodeToFrame varName varType (removeLeadingPercent exprString)
     else do
+      inIfElse <- isAnyTokenIfElseUp
+      when inIfElse $ do
+        potentiallyAddDeclaredVariableToFrame varName varType (removeLeadingPercent exprString)
       addVariableToFrame varName varType (removeLeadingPercent exprString)
 
 declareEmptyStringIfNotExists :: LCS String
@@ -620,6 +747,21 @@ commonDecrIncrOperation ident op = do
       updateVariableInStack varName varType opCounter
       addPhiNodeToFrame varName varType opCounter
     Nothing -> throwError $ "Variable not defined: " ++ varName
+
+tokenIfElseUp :: LCS ()
+tokenIfElseUp = do
+  s <- get
+  modify $ \s -> s { tokenIfElse = tokenIfElse s + 1 }
+
+tokenIfElseDown :: LCS ()
+tokenIfElseDown = do
+  s <- get
+  modify $ \s -> s { tokenIfElse = tokenIfElse s - 1 }
+
+isAnyTokenIfElseUp :: LCS Bool
+isAnyTokenIfElseUp = do
+  s <- get
+  return $ tokenIfElse s > 0
 
 ----------------
 -- PHI SEGMENT--
@@ -794,6 +936,35 @@ handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranc
     else do
       forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
         createPhiNodeWithOneValue varName varType regAfterTrue lastLabelInTrueBranch
+
+createPhiNodesAndUpdateFramesWithExprsAfterCondElse :: String -> String -> [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] ->
+                                          LCS ([String], [(Latte.Abs.Expr, String)], [(Latte.Abs.Expr, String)])
+createPhiNodesAndUpdateFramesWithExprsAfterCondElse ifLabel elseLabel ifFrame elseFrame = do
+  (phiNodes, updatedIfFrame, updatedElseFrame) <- foldM processExpr ([], ifFrame, elseFrame) ifFrame
+  return (phiNodes, updatedIfFrame, updatedElseFrame)
+  where
+    processExpr (accPhi, accIfFrame, accElseFrame) (expr, varNameIf) = do    
+      maybeVarNameElse <- searchExprsFrameAndLookupForExpr expr accElseFrame
+      case maybeVarNameElse of
+        Just varNameElse ->
+          if varNameIf /= varNameElse then do
+            phiCounter <- getNextPhiCounterAndUpdate
+            let phiLabel = "%phi_value_" ++ show phiCounter
+            let phiNode = phiLabel ++ " = phi [%" ++ varNameIf ++ ", %" ++ ifLabel ++ "] [%" ++ varNameElse ++ ", %" ++ elseLabel ++ "]"
+            let updatedIfFrame = replaceExprVarName expr phiLabel accIfFrame
+            let updatedElseFrame = replaceExprVarName expr phiLabel accElseFrame
+            return (phiNode : accPhi, updatedIfFrame, updatedElseFrame)
+          else
+            return (accPhi, accIfFrame, accElseFrame)
+        Nothing -> return (accPhi, accIfFrame, accElseFrame)
+
+    replaceExprVarName expr newName frame = map (\(e, var) -> if e == expr then (e, newName) else (e, var)) frame
+
+searchExprsFrameAndLookupForExpr :: Latte.Abs.Expr -> [(Latte.Abs.Expr, String)] -> LCS (Maybe String)
+searchExprsFrameAndLookupForExpr expr frame = do
+  matches <- filterM (\(e, _) -> isExprEqual e expr) frame
+  return $ fmap snd (listToMaybe matches)
+
 
 -------------------------------
 --INDUCTION VARIABLES SEGMENT--
@@ -1013,7 +1184,7 @@ reduceMul (Latte.Abs.EMul p l op r) node = do
     Latte.Abs.Times _ -> do
       case (reducedL, reducedR) of
         (Latte.Abs.ELitInt _ l, Latte.Abs.EVar _ r) -> reduceMulWithInduction reducedL reducedR node
-        (Latte.Abs.EVar _ l, Latte.Abs.ELitInt _ r) -> reduceMulWithInduction reducedR reducedL node   
+        (Latte.Abs.EVar _ l, Latte.Abs.ELitInt _ r) -> reduceMulWithInduction reducedR reducedL node
         (Latte.Abs.ELitInt _ l, Latte.Abs.ELitInt _ r) -> do
           let number = l * r
           return $ Latte.Abs.ELitInt p number
@@ -1028,7 +1199,7 @@ reduceMulWithInduction (Latte.Abs.ELitInt p1 l) (Latte.Abs.EVar p2 r) node = do
     ivVal <- getValueOfInductionVariable (name r)
     valueToNewVar <- case ivVal of
       Just val -> do
-        let number = fromIntegral val * (fromIntegral l) 
+        let number = fromIntegral val * (fromIntegral l)
         addVariableWithReducedExprToFrame newVar (name r) number
         return ()
       Nothing -> error "Something went wrong with reduceMulWithInduction"
@@ -1073,11 +1244,11 @@ replaceExprsInStmtToReduced stmt =
           newExpr <- reduceExpr e
           newStmt1 <- replaceExprsInStmtToReduced stmt1
           newStmt2 <- replaceExprsInStmtToReduced stmt2
-          return $ Just $ Latte.Abs.CondElse p newExpr (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)  
+          return $ Just $ Latte.Abs.CondElse p newExpr (fromMaybe stmt1 newStmt1) (fromMaybe stmt2 newStmt2)
     Latte.Abs.While p e s-> do
       newExpr <- reduceExpr e
       return $ Just $ Latte.Abs.While p newExpr s
-    Latte.Abs.Incr p ident -> do 
+    Latte.Abs.Incr p ident -> do
       return $ Just stmt
     Latte.Abs.Decr p ident -> do
       return $ Just stmt
@@ -1105,7 +1276,7 @@ replaceBodyOfWhileWithReduction body = do
 
 addAssignmentToVarsAfterIV :: Latte.Abs.Block -> LCS Latte.Abs.Block
 addAssignmentToVarsAfterIV block  = do
-  stmtsToAddAfterIV <- createAssignmentBlockWithReducedExpression 
+  stmtsToAddAfterIV <- createAssignmentBlockWithReducedExpression
   let mapWithIvsAndStmts = createMapFromList stmtsToAddAfterIV
   return $ addStmtsAfterInductionVars mapWithIvsAndStmts block
 
@@ -1114,16 +1285,16 @@ addStmtsAfterInductionVars stmtMap (Latte.Abs.Block p stmts) = Latte.Abs.Block p
   where
     addStmts :: [Latte.Abs.Stmt] -> [Latte.Abs.Stmt]
     addStmts [] = []
-    addStmts (s:ss) = 
+    addStmts (s:ss) =
       case s of
-        Latte.Abs.Ass p ident _ -> 
+        Latte.Abs.Ass p ident _ ->
           s : getExtraStmts (name ident) ++ addStmts ss
-        Latte.Abs.Incr p ident -> 
+        Latte.Abs.Incr p ident ->
           s : getExtraStmts (name ident) ++ addStmts ss
-        Latte.Abs.Decr p ident -> 
+        Latte.Abs.Decr p ident ->
           s : getExtraStmts (name ident) ++ addStmts ss
         -- Obsługa zagnieżdżonych bloków
-        Latte.Abs.BStmt p block -> 
+        Latte.Abs.BStmt p block ->
           Latte.Abs.BStmt p (addStmtsAfterInductionVars stmtMap block) : addStmts ss
         _ -> s : addStmts ss
 
@@ -1681,7 +1852,6 @@ instance Compile Latte.Abs.Stmt where
             modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br i1 " ++ e ++ ", label %" ++ trueLabel ++ ", label %" ++ endLabel] }
             varsInCaseOfReturnBeforeIf <- gets variablesStack
             phiInCaseOfReturnBeforeIf <- gets phiNodesStack
-            exprsFrameBeforeIf <- gets computedExprsStack
             pushExprsFrame
             pushLabelToStack trueLabel
             pushPhiNodesFrame
@@ -1702,7 +1872,6 @@ instance Compile Latte.Abs.Stmt where
             pushLabelToStack endLabel
             modify $ \s -> s { returnReached = originalReturnFlag}
             popExprsFrame
-            modify $ \s -> s { computedExprsStack = exprsFrameBeforeIf }
             if not returnFlag then do
               case phiFrameAfterIf of
                 (phiFrameAfter:_) -> do
@@ -1737,6 +1906,7 @@ instance Compile Latte.Abs.Stmt where
           Latte.Abs.ELitTrue _ -> compile stmt1
           Latte.Abs.ELitFalse _ -> compile stmt2
           _ -> do
+            tokenIfElseUp
             counter <- getNextLabelCounterAndUpdate
             let trueLabel = "if_true_" ++ show counter
             let falseLabel = "if_false_" ++ show counter
@@ -1745,6 +1915,7 @@ instance Compile Latte.Abs.Stmt where
             isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
             -- true branch
             pushPhiNodesFrame
+            pushDeclaredVariablesFrame
             pushLabelToStack trueLabel
             originalReturnFlag <- gets returnReached
             variableStackBeforeTrueBranch <- gets variablesStack
@@ -1752,8 +1923,14 @@ instance Compile Latte.Abs.Stmt where
             pushExprsFrame
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [trueLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; expressions in true branch: " ++ show exprsFrameBeforeTrueBranch] }
             compile stmt1
             returnFlag1 <- gets returnReached
+            exprFrameAfterTrueBranchBeforeDeleteDecls <- gets computedExprsStack
+            declsInIf <- gets declaredVariablesInIfElseBlock
+            tfAIf <- getTopFrameOfDeclaredVariables
+            exprFrameAfterTrueBranch <- removeDeclaredVariablesFromExprsStack exprFrameAfterTrueBranchBeforeDeleteDecls tfAIf
+            popDeclaredVariablesFrame
             popExprsFrame
             modify $ \s -> s { variablesStack = variableStackBeforeTrueBranch, computedExprsStack = exprsFrameBeforeTrueBranch }
             topLabelAfterTrueBranch <- getTopLabel
@@ -1762,18 +1939,27 @@ instance Compile Latte.Abs.Stmt where
             unless returnFlag1 $
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
             -- false branch
+            pushDeclaredVariablesFrame
             variableStackBeforeFalseBranch <- gets variablesStack
-            exprsFrameBeforeFalseBranch <- gets computedExprsStack
             pushExprsFrame
             pushPhiNodesFrame
             pushLabelToStack falseLabel
             modify $ \s -> s { compilerOutput = compilerOutput s ++ [falseLabel ++ ":"] }
             modify $ \s -> s { returnReached = False }
             compile stmt2
-            popExprsFrame
-            modify $ \s -> s { variablesStack = variableStackBeforeFalseBranch, computedExprsStack = exprsFrameBeforeFalseBranch }
-            returnFlag2 <- gets returnReached
             topLabelAfterFalseBranch <- getTopLabel
+            exprFrameAfterFalseBranchBeforeDeleteDecls <- gets computedExprsStack
+            declsInElse <- gets declaredVariablesInIfElseBlock
+            tfAElse <- getTopFrameOfDeclaredVariables
+            exprFrameAfterFalseBranch <- removeDeclaredVariablesFromExprsStack exprFrameAfterFalseBranchBeforeDeleteDecls tfAElse
+            popDeclaredVariablesFrame
+            -- pierwsze co trzeba zrobić to usunąć z topFrame te zmienne, które były zadeklarowane wewnątz ifa jeśli jest jakaś zmienna o tej nazwie w ramkach niżej
+            phiWithExprsInBothFrames <- updateExprsStackAfterIfElse topLabelAfterTrueBranch topLabelAfterFalseBranch exprFrameAfterTrueBranch exprFrameAfterFalseBranch
+            modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; phi with exprs in both frames: " ++show phiWithExprsInBothFrames] }
+            mergeTopFrameInElseIf
+            -- popExprsFrame
+            modify $ \s -> s { variablesStack = variableStackBeforeFalseBranch}
+            returnFlag2 <- gets returnReached
             phiFrameAfterFalseBranch <- getTopPhiFrame
             -- end
             if isItInInlineFunction then do
@@ -1784,7 +1970,7 @@ instance Compile Latte.Abs.Stmt where
                 dummy <- putDummyRegister
                 modify $ \s -> s { isBrLastStmt = False }
                 phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock ++ phiWithExprsInBothFrames}
                 pushLabelToStack endLabel
                 modify $ \s -> s { returnReached = originalReturnFlag}
             else
@@ -1792,10 +1978,10 @@ instance Compile Latte.Abs.Stmt where
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
                 modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
                 phiBlock <- handlePhiBlockAtIfElse phiFrameAfterTrueBranch phiFrameAfterFalseBranch topLabelAfterTrueBranch topLabelAfterFalseBranch returnFlag1 returnFlag2
-                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+                modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock ++ phiWithExprsInBothFrames}
                 pushLabelToStack endLabel
                 modify $ \s -> s { returnReached = originalReturnFlag}
-            popExprsFrame
+            tokenIfElseDown
       Latte.Abs.While p expr stmt -> do
         counter <- getNextLabelCounterAndUpdate
         pushInductionVariablesFrame
@@ -1904,7 +2090,9 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       isBrLastStmt = False,
       exprsToReduceStack = [],
       variablesWithReducedExprStack = [],
-      reducedVariablesCounter = 0
+      reducedVariablesCounter = 0,
+      declaredVariablesInIfElseBlock = [],
+      tokenIfElse = 0
     }
     predefFunctions =
       [
