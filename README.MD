@@ -5,18 +5,17 @@ Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, któ
 2. Backend: 8 pkt
 3. Użycie rejestrów i phi zamiast alloc w LLVM: 2 pkt
 4. LCSE: 3 pkt
-5. function inlining: 3 pkt (wszystkie funkcje poza main i rekurancyjnymi są inlinowane)
-6. zmienne indukcyjne pętli i redukcja mocy: 2 pkt
+5. GCSE: 2 pkt
+6. function inlining: 3 pkt (wszystkie funkcje poza main i rekurancyjnymi są inlinowane)
+7. zmienne indukcyjne pętli i redukcja mocy: 2 pkt
 
-Aktualna maksymalna punktacja: 22 pkt
+Aktualna maksymalna punktacja: 24 pkt
 
 W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozszerzenia:
-* GSCE: 2 pkt
 * tablice: 1 pkt
 * struktury: 2 pkt
 * odśmiecanie: 2 pkt
 
-Suma: 30 pkt
 
 ## Uruchamianie
 Aby uruchomić kompilator należy:
@@ -39,7 +38,6 @@ Dodatkowo, można przetestować kod no_inline bezpśrednio za pomocą komendy:
 3. Plik `latc_llvm`: Skrypt bashowy, który uruchamia kompilator plikiem latc i podlinkowuje wygenerowany kod LLVM z kodem z katalogu lib. W wyniku jego działania w katalogu w którym został użyty powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
 4. Plik `src/Makefile`: Plik makefile, który kompiluje kompilator i tworzy plik wykonywalny RunCompile w katalogu src/Latte.
 5. Plik `Makefile`: Plik makefile, który wywołuje make w katalogu src i tworzy plik wykonywalny latc w katalogu głównym.
-
 6. * Plik `latc`: Plik wykonywalny, powstający po uruchomieniu komendy make uruchamiający kompilator. Nie jest dołączony do projektu, ale postanawiam umieścić go w README, żeby zaznaczyć, że plik ten jest linkiem do pliku RunCompile w katalogu src/Latte.
 
 ## Szczegóły kompilacji
@@ -58,20 +56,38 @@ Cała napisane przeze mnie logika kompilacji jest umieszczona w modułach Compil
 
 
 ## Opis realizacji optymalizacji
+***W następnym podrozdziale znajduje się opis przykładów dołączonych przeze mnie do projektu, wizualizujących działanie optymalizacji.***
 ### LCSE
 W trakcie kompilacji wykorzystywane są informacje o typach wyrażeń, które zostały zebrane w etapie typecheckingu. Przy napotkaniu nowego wyrażenia sprawdzam, czy było już ono wcześniej obliczane. Umożliwia mi to zaimplementowany mechanizm porównywania wyrażeń. Jeśli wyrażenie zostało już wcześniej obliczone, to zamiast jego obliczania, wstawiam do kodu LLVM instrukcję przypisania do zmiennej, która przechowuje wynik obliczenia tego wyrażenia. Dzięki temu unikam wielokrotnego obliczania tego samego wyrażenia, co przyspiesza działanie programu. Nie dodałem jednak zastępowania wyrażeń, które są wywołaniami funkcji, ponieważ w tym przypadku nie jestem w stanie sprawdzić, czy funkcja jest czysta, czy nie. Po zobaczeniu instrukcji przypisania do zmiennej usuwam ze zbioru wyrażeń wszystkie te, które były powiązane z tą zmienną, co zapewnia mi, że nie zastąpię wyrażenia innym, które jest już nieaktualne. 
 W aktualnej wersji kompilatora ramka LCSE jest czyszczona po wyjściu z bloku. 
+
+### GCSE
+Działa tak samo jak LCSE, z tą różnicą, że jeśli podwyrażenie jest dostępne w każdej możliwej ścieżce (a dokładniej: jest obliczane zarówno w gałęzi if jak i else przypadku CondElse) to również jest ono zapamiętane i reużywane. W przypadku, gdy podwyrażenie jest dostępne tylko w jednej gałęzi if lub else, to nie jest ono zapamiętane.
+
 ### Function inlining
-Na etapie typecheckingu zbieram informacje o tym, jakie funkcje są wywoływane w ciele każdej z funkcji. Tworzę skierowany graf wywołań, w którym węzłami są funkcje a krawędziami wywołania. Następnie szukam w tym grafie cykli. Początkowo zakładam, że wszystkie funkcje są inlinowalne. Gdy znajdę cykl usuwam ze zbioru funkcji inlinowanych wszyskite funkcje z tego cyklu. Pozwala mi to zapobiec inlinowaniu funkcji rekurencyjnych i wzajemnie rekurencyjnych. Przekazuję do kompilatora informacje o tym, które funkcje są inlinowalne i gdy w trakcie kompilacji napotkam wywołanie funkcji, to sprawdzam, czy jest ona inlinowalna. Jeśli tak, to wstawiam do kodu LLVM kod funkcji, którą wywołuje, a jeśli nie, to wstawiam instrukcję wywołania funkcji. Kod funkcji inlinowalnej różni się tym, że nie zwraca nic przez return. Po napotkaniu takiej instrukcji (trochę inny mechanizm w przypadku if) wstawiam instrukcję skoku do końca funkcji inlinowanej. 
+Na etapie typecheckingu zbieram informacje o tym, jakie funkcje są wywoływane w ciele każdej z funkcji. Tworzę skierowany graf wywołań, w którym węzłami są funkcje a krawędziami wywołania. Następnie szukam w tym grafie cykli. Początkowo zakładam, że wszystkie funkcje są inlinowalne. Gdy znajdę cykl usuwam ze zbioru funkcji inlinowanych wszyskite funkcje z tego cyklu. Pozwala mi to zapobiec inlinowaniu funkcji rekurencyjnych i wzajemnie rekurencyjnych. Przekazuję do kompilatora informacje o tym, które funkcje są inlinowalne i gdy w trakcie kompilacji napotkam wywołanie funkcji, to sprawdzam, czy jest ona inlinowalna. Jeśli tak, to wstawiam do kodu LLVM kod funkcji, którą wywołuje, a jeśli nie, to wstawiam instrukcję wywołania funkcji. Kod funkcji inlinowalnej różni się tym, że nie zwraca nic przez return. Po napotkaniu takiej instrukcji (trochę inny mechanizm w przypadku if) wstawiam instrukcję skoku do końca funkcji inlinowanej. **Poprzed generowanie odpowiednich komentarzy zadbałem o to, żeby były widoczne: początek funkcji inlinowanej, których rejestrów używa jako argumentów i końca funkcji inlinowanej.**
 ### Zmienne indukcyjne pętli i redukcja mocy
 - **⁠Zmienne indukcyjne pętli**:
 W celu zidentyfikowania zmiennych indukcyjnych przechodzę przez ciało pętli w poszukiwaniu statemeantów, które są postaci ``i = i + C`` lub ``i++`` lub ``i--``, gdzie i to identyfikator zmiennej, a C jakaś stała. Zgodnie z definicją z zajęć, przypisanie na zmienną indukcyjną może odbywać się dokładnie raz. W myśl tej zasady, jeśli napotkam drugie przypisanie do zmiennej indukcyjnej, to usuwam ją ze zbioru zmiennych indukcyjnych. Usuwam ze zbioru także każdą zmienną indukcyjną, która wystąpiła w bloku if lub ifelse, bo nie mam pewności, czy pojawi się dokładnie raz i będzie w ten sam sposób inkrementowana. ⁠
 - **Redukcja mocy**:
-W moim kompilatorze redukuję każde wyrażenie i podwyrażenie, które kwalifikuje się do redukcji, czyli takie, które jest postaci ``A*i``, gdzie A to stała, a i to zmienna indukcyjna. Gdy posiadam już informację o zmiennych indukcyjnych danej pętli, rozpoczynam poszukiwania wyrażeń i podwyrażeń do redukcji. W tym celu rekurencyjnie rozważam każde wyrażenie używane w pętli (poza przypadkiem zagnieżdżonej pętli while, która to posiada swój własny stos redukcji). Jeśli napotkam wyrażenie, które kwalifikuje się do redukcji, to zapisuje to wyrażenie do przetworzenia, przypisuję mu nową zmienną redukcyjną i zastępuje to wyrażenie wyrażeniem EVar z tą zmienną. Po przejściu całego ciała pętli tworzę blok deklaracji zmiennych redukcyjnych, który umieszczam przed pętlą while. Zmienne redukcyjne są zainicjalizowane na wyrażenie, które zastąpiły. Na przykład, jeśli znaleźliśmy wyrażenie i*4, to tworzymy nową zmienną redukcyjną, powiedzmy k, i przed ciałem pętli umieścimy:
+W moim kompilatorze redukuję każde wyrażenie i podwyrażenie, które kwalifikuje się do redukcji, czyli takie, które jest postaci ``A*i``, gdzie A to stała, a i to zmienna indukcyjna. Gdy posiadam już informację o zmiennych indukcyjnych danej pętli, rozpoczynam poszukiwania wyrażeń i podwyrażeń do redukcji. W tym celu rekurencyjnie rozważam każde wyrażenie używane w pętli (poza przypadkiem zagnieżdżonej pętli while, która to posiada swój własny stos redukcji). Jeśli napotkam wyrażenie, które kwalifikuje się do redukcji, to zapisuje to wyrażenie do przetworzenia, przypisuję mu nową zmienną redukcyjną i zastępuje to wyrażenie wyrażeniem EVar z tą zmienną. Po przejściu całego ciała pętli tworzę blok deklaracji zmiennych redukcyjnych, który umieszczam przed pętlą while. Zmienne redukcyjne są zainicjalizowane na wyrażenie, które zastąpiły. Na przykład, jeśli znaleźliśmy wyrażenie `i*4`, to tworzymy nową zmienną redukcyjną, powiedzmy k, i przed ciałem pętli umieścimy:
 ``
 int k = i*4;
 ``
 Samo mnożenie zredukowane dodawaniem zapisujemy zaraz po inkrementacji zmiennej indukcyjnej. Jeśli zmienna indukcyjna wyglądała i = i + A, a zmienna redukcyjna ``k = i*B``, to po napotkaniu instrukcji ``i = i+ A`` umieszczamy przypisanie: ``k = k + A*B``, gdzie A*B to stała, którą wymnażamy na etapie kompilacji.
+
+## Opis programów wizualizujących działanie optymalizacji
+**Wszyskie programy wizualizujące działanie optymalizacji są umieszczone w katalogu `optymalizacje_przyklady/`**
+### LCSE: `lcse.lat`
+W przykładzie demonstuję wykorzystywanie już wcześniej obliczonych podwyrażeń. Program rozpoczyna się od deklaracji i inicjalizacji zmiennych, po czym przechodzi do serii obliczeń, w których pojawiają się powtarzające się podwyrażenia. Centralnym punktem jest identyfikacja i optymalizacja tych powtarzających się fragmentów kodu. W kodzie umieściłem kilka podwyrażeń, które są dobrymi kandydatami do LCSE. Są to `a + b` i `a - b`, używane w różnych miejscach programu. Kompilator wykrywa te powtarzające się podwyrażenia i oblicza je tylko raz na początku bloku kodu, a następnie wielokrotnie wykorzystuje wyniki tych obliczeń. Natomiast po zmianie wartości zmiennej `a` kompilator powtarza proces obliczania podwyrażeń i nie używa starych wyników, ponieważ są one nieaktualne. Nowe podwyrażenia są ponownie zapamiętywane i używane.
+### GCSE: `gcse.lat`
+Podobnie jak w LCSE, GCSE polega na wykorzystywaniu już wcześniej obliczonych podwyrażeń, lecz różni się tym, że dotyczy to całej funkcji, a nie tylko pojedynczego bloku kodu. Obrazuje to pokazując reużycie podwyrażenia policzonego w obu gałęziach ifelse. Warto zauważyć, że chodzi o podwyrażenia, a nie przypisania. Jak widać w przykładzie, podwyrażenia `a-b+1` jest przypisywane po pętli na na rejestr `%phi_value_1` i następne użycia tego podwyrażenia są zastępowane przez ten rejestr. Warto zauważyć, że podwyrażenie `b+c` nie jest reużywane, bo nie było wyliczone w obu gałęziach ifelsea.
+### Function inlining: `inline_functions.lat`
+W tym przykładzie demonstruję inlinowanie funkcji.
+Program składa się z 3 funkcji możliwych do inlinowania (`do_nothing_and_sum`, `square` i `root`) i 3 niemożliwych (`factorial`, `even`, `odd`).
+ Warto zauważyć, że realizuję inlining funkcji także zagnieżdżonych, wywoływanych w innych funkcjach. Takim przykładem jest wywołanie funkcji `do_nothing_and_sum`, podczas którego inlinuje także w main dwie pozostałe funkcje. Funkcja `factorial` jest rekurencyjna, więc nie używam na niej inliningu. Wartym zauważenia jest to, że wykrywam rekurencję wzajemną, więc nie inlinuje również funkcji `even`, natomiast już w definicji funkcji `odd` inlinuje funkcję `square`, (tylko po to, że w funkcjach rekurencyjnych mogę inlinować funkcje nierekurencyjne). 
+### Zmienne indukcyjne pętli i redukcja mocy: `redukcja_mocy_petli.lat`
+W przykładzie demonstruję **wykrywanie różnych zmiennych indukcyjnych** oraz **redukcje mocy w pętli na różnych rodzajach wyrażeń i podwyrażeń**. Przed pętlą deklaruje wszystkie używane zmienne. W pętli while używam dwóch zmiennych indukcyjnych, jedna jest inkrementowana za pomocą `++`, a druga zmienia się o ujemną liczbę co obrót. Prezentuje także redukcje mocy dla każdego podwyrażenia spośród pokazanych możliwego do zredukowania: w przypisaniu, w wywołaniu funkcji, w zwykłym wyrażeniu. W ogólności redukcja działa w każdym przypadku zgodnie z algorytmem pokazanym na wykładzie. 
 
 
 ## Środowisko

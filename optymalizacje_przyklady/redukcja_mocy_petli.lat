@@ -1,0 +1,17 @@
+int main() {
+    int n = 0;
+    int suma = 0;
+    int i = 10;
+    int j = 4;
+
+    while (i > n) {
+        suma = suma + i*2;  // Zmienna indukcyjna 'i' i redukcja mocy
+        i = i - 2;
+        printInt(4*j); // Zmienna indukcyjna 'j' i redukcja mocy w wyrażeniu
+        j++;
+        5*j; // Zmienna indukcyjna 'j' i redukcja mocy w wyrażeniu bez przypisania, j używane wielokrotnie
+    }
+
+    printInt(suma);
+    return 0;
+}

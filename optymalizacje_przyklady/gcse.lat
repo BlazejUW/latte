@@ -1,0 +1,22 @@
+int main() {
+    int a = 5;
+    int b = 10;
+
+    // Powtarzające się podwyrażenia w obu gałęziach ifelse są wyliczane tylko raz
+    int c = (a + b) * (a - b);
+    //Podwyrażenie a-b+1 jest dostępne po wyjściu z pętli i nie obliczam go drugi raz
+    if(c > 0) {
+        printInt(a-b+1);
+        int d = b+c;
+    } else {
+        int c_prim = a-b+1 + c;;
+    }
+    //Podwyrażenie a-b+1 jest dostępne po wyjściu z ifelse i nie obliczam go kolejny realizowane
+    printInt(c);
+    int d = a - b + 1;
+    printInt(d);
+    printInt(a - b + 1);
+    // Podwyrażenie b+c nie jest dostępne po wyjściu z ifelse, bo nie jest ono wyliczane w obu gałęziach
+    printInt(b+c);
+    return 0;
+}
