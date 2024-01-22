@@ -120,10 +120,14 @@ isPredefFunction ident = do
       ]
 
 collectFunctionSignatures :: Latte.Abs.TopDef -> LTS ()
-collectFunctionSignatures (Latte.Abs.FnDef _ t ident args _) = do
+collectFunctionSignatures (Latte.Abs.FnDef p t ident args _) = do
   let argTypes = map (\(Latte.Abs.Arg _ argType _) -> keywordToType argType) args
   let returnType = keywordToType t
-  modify $ \s -> s {functionsSignatures = Map.insert (ident, argTypes) returnType (functionsSignatures s)}
+  let signature = (ident, argTypes)
+  existingSignature <- gets (Map.lookup signature . functionsSignatures)
+  case existingSignature of
+    Just _ -> throwError $ "Function " ++ show ident ++ " with signature " ++ show argTypes ++ " already defined " ++ errLocation p
+    Nothing -> modify $ \s -> s {functionsSignatures = Map.insert signature returnType (functionsSignatures s)}
 
 typecheckDecrIncr :: (Show a1, Show a2) => Maybe (a1, a2) -> Latte.Abs.Ident -> StateT TypecheckerState (Either String) ()
 typecheckDecrIncr p ident = do
