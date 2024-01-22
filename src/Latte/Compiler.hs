@@ -617,10 +617,6 @@ commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = 
       return ()
     else do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
-      isItInInlineFunction <- checkIfCodeIsInsideInlineFunction
-      when isItInInlineFunction $ do
-        dummy <- putDummyRegister
-        addInlineFunctionReturnToFrame endLabel dummy
       pushLabelToStack endLabel
 
 --------------------------
@@ -804,9 +800,18 @@ getTopPhiFrame = gets $ \s -> case phiNodesStack s of
   _ -> Map.empty
 
 addPhiNodeToFrame :: String -> Type -> String -> LCS ()
-addPhiNodeToFrame varName varType llvmVarName = modify $ \s ->
-  let (currentFrame:rest) = phiNodesStack s
-  in s { phiNodesStack = Map.insert varName (varType, llvmVarName) currentFrame : rest }
+addPhiNodeToFrame varName varType llvmVarName = do
+  isAlreadyPhi <- checkIfVarHasPhiNode varName
+  unless isAlreadyPhi $ do
+    phiStack <- gets phiNodesStack
+    case phiStack of
+      (currentFrame:rest) -> do
+        let updatedFrame = Map.insert varName (varType, llvmVarName) currentFrame
+        modify $ \s -> s { phiNodesStack = updatedFrame : rest }
+      _ -> return ()
+    -- modify $ \s ->
+    --   let (currentFrame:rest) = phiNodesStack s
+    --   in s { phiNodesStack = Map.insert varName (varType, llvmVarName) currentFrame : rest }
 
 getPhiNode :: String -> LCS (Maybe (Type, String))
 getPhiNode varName = gets $ \s ->
@@ -900,6 +905,15 @@ fakeWhileRun expr stmt labelCounter = do
     put s
     fakeWhileRunAndCountPhiNodesAndAddPhiBlock expr stmt labelCounter offset
     return ()
+
+checkIfVarHasPhiNode :: String -> LCS Bool
+checkIfVarHasPhiNode varName = do
+  s <- get
+  let frames = phiNodesStack s
+  let topFrame = case frames of
+        (topFrame:_) -> topFrame
+        _ -> Map.empty
+  return $ Map.member varName topFrame
 
 handlePhiBlockAtIfElse :: Map String (Type, String) -> Map String (Type, String) -> String -> String -> Bool -> Bool -> LCS [String]
 handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch wasReturnInTB wasReturnInFB = do
@@ -1967,7 +1981,7 @@ instance Compile Latte.Abs.Stmt where
                 let outputWithPhiBlock = compilerOutput s ++ phiBlock
                     outputWithPhiAndExprs =
                         if not (null phiWithExprsInBothFrames)
-                        then outputWithPhiBlock ++ ["; Expressions used in both branches of ifelse:"] ++ phiWithExprsInBothFrames
+                        then outputWithPhiBlock ++ ["; Expressions used in both branches of ifelse: "] ++ phiWithExprsInBothFrames
                         else outputWithPhiBlock
                 in s { compilerOutput = outputWithPhiAndExprs }
               when (isItInInlineFunction && ((null phiWithExprsInBothFrames) && (null phiBlock))) do

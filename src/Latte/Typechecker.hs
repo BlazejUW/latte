@@ -281,7 +281,10 @@ instance Typecheck Latte.Abs.Program where
     mapM_ typecheck topdefs
     functions <- gets functionsSignatures
     let key = (Latte.Abs.Ident "main", [])
-    when (Map.notMember key functions) $ throwError $ "Function main not found " ++ errLocation p
+    case Map.lookup key functions of
+      Nothing -> throwError $ "Function main not found " ++ errLocation p
+      Just Integer -> return ()
+      _ -> throwError $ "Function int main() not found " ++ errLocation p
     functionsGraph <- gets functionsGraph
     let cycles = findCycles functionsGraph
     modify $ \s -> s {inlineFunctions = removeCyclicFunctions (inlineFunctions s) cycles}
