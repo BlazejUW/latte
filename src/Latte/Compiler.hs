@@ -51,6 +51,7 @@ data CompilerState = CompilerState
     labelsStack :: [String],
     inductionVariablesStack :: [Map String (Bool, Int)], -- (name: (isIV, loopConstant))
     tokenWhile :: Int,
+    moreThanTwoTokensWhileIsUp :: Bool,
     tokenIfElse :: Int,
     exprsToReduceStack :: [Map Latte.Abs.Expr String], -- expr: nameToThisExpr
     variablesWithReducedExprStack :: [Map String (String,Int)], -- nameOfReducedExpr: number to add
@@ -586,10 +587,24 @@ isAnyTokenWhileUp = do
   s <- get
   return $ tokenWhile s > 0
 
+isMoreThanTwoTokensWhileUp :: LCS Bool
+isMoreThanTwoTokensWhileUp = do
+  s <- get
+  isMoreThanTwo <- gets moreThanTwoTokensWhileIsUp
+  if isMoreThanTwo then do
+    when (tokenWhile s == 1) $ do
+      modify $ \s -> s { moreThanTwoTokensWhileIsUp = False }
+    return $ isMoreThanTwo
+  else do
+    when (tokenWhile s > 2) $ do
+      modify $ \s -> s { moreThanTwoTokensWhileIsUp = True }
+    return $ tokenWhile s > 2
+
 commonWhilePart :: Latte.Abs.BNFC'Position -> Latte.Abs.Expr -> Latte.Abs.Stmt -> String ->
           String -> String -> Int -> Bool -> StateT CompilerState (Either CompilerError) ()
 commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = do
     tokenWhileUp
+    varStackBefore <- gets variablesStack
     pushPhiNodesFrame
     originalReturnFlag <- gets returnReached
     modify $ \s -> s { returnReached = False }
@@ -605,10 +620,20 @@ commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = 
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [bodyLabel ++ ":"] }
     ivsToString <- formatInductionVariables
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; Induction variables: " ++ ivsToString] }
+    phiNodes <- gets phiNodesStack
     pushLabelToStack bodyLabel
     compile stmt
     popExprsFrame
-    popPhiNodesFrameAndMergeItIntoStack
+    isMoreThanTwoTokensWhileUp <- isMoreThanTwoTokensWhileUp
+    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; token while Up? " ++ show isMoreThanTwoTokensWhileUp] }
+    phiNodeTopFrameAfterEverytthing <- (if isMoreThanTwoTokensWhileUp then (do
+      case phiNodes of
+        (topFrame:_) -> return topFrame
+        _ -> return Map.empty
+      ) else (do
+      popPhiNodesFrameAndMergeItIntoStack
+      return Map.empty
+      ))
     modify $ \s -> s { variablesStack = variablesStackAfterFakeLoop }
     modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ condLabel] }
     modify $ \s -> s { returnReached = originalReturnFlag}
@@ -617,6 +642,11 @@ commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = 
       return ()
     else do
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [endLabel ++ ":"] }
+      when isMoreThanTwoTokensWhileUp $ do
+        topLabelBeforeEnd <- getTopLabel
+        phiBlock <- createSinglePhiBlock varStackBefore phiNodeTopFrameAfterEverytthing condLabel
+        modify $ \s -> s { compilerOutput = compilerOutput s ++ phiBlock }
+      popPhiNodesFrameAndMergeItIntoStack
       pushLabelToStack endLabel
 
 --------------------------
@@ -773,15 +803,19 @@ popPhiNodesFrameAndMergeItIntoStack = do
   case stack of
     [_] -> modify $ \s -> s { phiNodesStack = [topFrame] }
     (_:rest) -> do
-      popPhiNodesFrame
-      newStack <- gets phiNodesStack
-      case newStack of
-        (currentTopFrame:rest) -> do
-          let mergedFrame = mergePhiFrames currentTopFrame topFrame
-          modify $ \s -> s { phiNodesStack = mergedFrame : rest }
-        -- Teoretycznie, ten przypadek nie powinien mieć miejsca,
-        -- ponieważ obsługujemy już wcześniej przypadek pojedynczej ramki
-        _ -> return ()
+      isAnyTokenWhileUp <- isAnyTokenWhileUp
+      if isAnyTokenWhileUp then do
+        mergeTopFrameInElseIf
+      else do
+        popPhiNodesFrame
+        newStack <- gets phiNodesStack
+        case newStack of
+          (currentTopFrame:rest) -> do
+            let mergedFrame = mergePhiFrames currentTopFrame topFrame
+            modify $ \s -> s { phiNodesStack = mergedFrame : rest }
+          -- Teoretycznie, ten przypadek nie powinien mieć miejsca,
+          -- ponieważ obsługujemy już wcześniej przypadek pojedynczej ramki
+          _ -> return ()
     [] -> modify $ \s -> s { phiNodesStack = [topFrame] }
 
 popPhiNodesFrame :: LCS ()
@@ -859,6 +893,30 @@ createPhiNodeWithOneValue varName varType reg label = do
   return ("%" ++ "phi_value_" ++ show labelCounter ++ " = phi " ++
     typeToLlvmKeyword varType ++ " [ %" ++ reg ++ ", %" ++
     label ++ " ]")
+
+-- createPhiBlock' :: [Map String (Type, String)] -> Map String (Type, String) -> String -> String -> LCS [String]
+-- createPhiBlock' framesBeforeLoop frameAfterLoop phiLabel whileBodyLabel = do
+--   let varsAfterLoop = Map.toList frameAfterLoop
+--   phiNodes <- mapM createPhiNodeForVar varsAfterLoop
+--   return $ catMaybes phiNodes
+--   where
+--     createPhiNodeForVar (varName, (varType, varRegAfter)) = do
+--       let varBefore = findInPhiFrameByNameAndType varName varType framesBeforeLoop
+--       case varBefore of
+--         Just varRegBefore -> Just <$> createPhiNode varName varType varRegBefore varRegAfter phiLabel whileBodyLabel
+--         Nothing -> return Nothing
+
+createSinglePhiBlock :: [Map String (Type, String)] -> Map String (Type, String) -> String -> LCS [String]
+createSinglePhiBlock framesBeforeLoop frameAfterLoop whileCondLabel = do
+  let varsAfterLoop = Map.toList frameAfterLoop
+  phiNodes <- mapM createPhiNodeForVar varsAfterLoop
+  return $ catMaybes phiNodes
+  where
+    createPhiNodeForVar (varName, (varType, varRegAfter)) = do
+      let varBefore = findInPhiFrameByNameAndType varName varType framesBeforeLoop
+      case varBefore of
+        Just varRegBefore -> Just <$> createPhiNodeWithOneValue varName varType varRegAfter whileCondLabel
+        Nothing -> return Nothing
 
 updateVariableInPhiTopFrame :: String -> Type -> String -> LCS ()
 updateVariableInPhiTopFrame  varName varType newReg = do
@@ -2102,7 +2160,8 @@ runCompiler program functionsSignatures exprTypes inlineFunctions = execStateT (
       variablesWithReducedExprStack = [],
       reducedVariablesCounter = 0,
       declaredVariablesInIfElseBlock = [],
-      tokenIfElse = 0
+      tokenIfElse = 0,
+      moreThanTwoTokensWhileIsUp = False
     }
     predefFunctions =
       [
