@@ -833,8 +833,8 @@ getTopPhiFrame = gets $ \s -> case phiNodesStack s of
 
 addPhiNodeToFrame :: String -> Type -> String -> LCS ()
 addPhiNodeToFrame varName varType llvmVarName = do
-  isAlreadyPhi <- checkIfVarHasPhiNode varName
-  unless isAlreadyPhi $ do
+  -- isAlreadyPhi <- checkIfVarHasPhiNode varName
+  -- unless isAlreadyPhi $ do
     phiStack <- gets phiNodesStack
     case phiStack of
       (currentFrame:rest) -> do
