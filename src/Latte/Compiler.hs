@@ -356,7 +356,6 @@ mergeTopFrameInElseIf = do
     [topFrame] -> do
       modify $ \s -> s { computedExprsStack = [topFrame] }
     _ -> do
-      modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; No exprs frames to merge at mergeTopFrameInElseIf"] }
       return ()
 
 mergeFrames :: [(Latte.Abs.Expr, String)] -> [(Latte.Abs.Expr, String)] -> LCS [(Latte.Abs.Expr, String)]
@@ -625,7 +624,6 @@ commonWhilePart p expr stmt condLabel bodyLabel endLabel counter isAlwaysTrue = 
     compile stmt
     popExprsFrame
     isMoreThanTwoTokensWhileUp <- isMoreThanTwoTokensWhileUp
-    modify $ \s -> s { compilerOutput = compilerOutput s ++ ["; token while Up? " ++ show isMoreThanTwoTokensWhileUp] }
     phiNodeTopFrameAfterEverytthing <- (if isMoreThanTwoTokensWhileUp then (do
       case phiNodes of
         (topFrame:_) -> return topFrame
