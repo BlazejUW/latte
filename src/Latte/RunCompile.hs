@@ -63,7 +63,16 @@ run inline p s =
               hPutStrLn stderr err
               exitFailure
             Right s -> do
-              let lines = unlines (compilerOutput s)
+              let autor =
+                    [ "; ---------------------------------------"
+                    , "; | About the creator of compiler:       |"
+                    , "; |   Name: Blazej Palkus                |"
+                    , "; |   Email: blazej.palkus@gmail.com     |"
+                    , "; |   Affiliation: University of Warsaw  |"
+                    , "; |   Date: January 2024                 |"
+                    , "; ---------------------------------------"
+                    ]
+              let lines = unlines (autor ++ compilerOutput s)
               hPutStrLn stderr "OK\n"
               putStr lines
   where

@@ -393,8 +393,6 @@ updateStackWithCommonExprs :: [[(Latte.Abs.Expr, String)]] -> [[(Latte.Abs.Expr,
 updateStackWithCommonExprs [] [] = return []
 updateStackWithCommonExprs (ifFrame:ifRest) (elseFrame:elseRest) = do
   commonExprs <- findCommonExprs ifFrame elseFrame
-  -- let updatedIfFrame = updateFrameWithCommonExprs ifFrame commonExprs
-  -- let updatedElseFrame = updateFrameWithCommonExprs elseFrame commonExprs
   rest <- updateStackWithCommonExprs ifRest elseRest
   return (commonExprs : rest)
 updateStackWithCommonExprs _ _ = error "Stacks do not match in size"
@@ -811,8 +809,6 @@ popPhiNodesFrameAndMergeItIntoStack = do
           (currentTopFrame:rest) -> do
             let mergedFrame = mergePhiFrames currentTopFrame topFrame
             modify $ \s -> s { phiNodesStack = mergedFrame : rest }
-          -- Teoretycznie, ten przypadek nie powinien mieć miejsca,
-          -- ponieważ obsługujemy już wcześniej przypadek pojedynczej ramki
           _ -> return ()
     [] -> modify $ \s -> s { phiNodesStack = [topFrame] }
 
@@ -824,7 +820,7 @@ popPhiNodesFrame = modify $ \s -> s {
   }
 
 mergePhiFrames :: Map String (Type, String) -> Map String (Type, String) -> Map String (Type, String)
-mergePhiFrames frame1 frame2 = Map.union frame2 frame1  -- frame2 ma pierwszeństwo
+mergePhiFrames frame1 frame2 = Map.union frame2 frame1  -- frame2 has priority
 
 getTopPhiFrame :: LCS (Map String (Type, String))
 getTopPhiFrame = gets $ \s -> case phiNodesStack s of
@@ -833,17 +829,12 @@ getTopPhiFrame = gets $ \s -> case phiNodesStack s of
 
 addPhiNodeToFrame :: String -> Type -> String -> LCS ()
 addPhiNodeToFrame varName varType llvmVarName = do
-  -- isAlreadyPhi <- checkIfVarHasPhiNode varName
-  -- unless isAlreadyPhi $ do
-    phiStack <- gets phiNodesStack
-    case phiStack of
-      (currentFrame:rest) -> do
-        let updatedFrame = Map.insert varName (varType, llvmVarName) currentFrame
-        modify $ \s -> s { phiNodesStack = updatedFrame : rest }
-      _ -> return ()
-    -- modify $ \s ->
-    --   let (currentFrame:rest) = phiNodesStack s
-    --   in s { phiNodesStack = Map.insert varName (varType, llvmVarName) currentFrame : rest }
+  phiStack <- gets phiNodesStack
+  case phiStack of
+    (currentFrame:rest) -> do
+      let updatedFrame = Map.insert varName (varType, llvmVarName) currentFrame
+      modify $ \s -> s { phiNodesStack = updatedFrame : rest }
+    _ -> return ()
 
 getPhiNode :: String -> LCS (Maybe (Type, String))
 getPhiNode varName = gets $ \s ->
@@ -891,18 +882,6 @@ createPhiNodeWithOneValue varName varType reg label = do
   return ("%" ++ "phi_value_" ++ show labelCounter ++ " = phi " ++
     typeToLlvmKeyword varType ++ " [ %" ++ reg ++ ", %" ++
     label ++ " ]")
-
--- createPhiBlock' :: [Map String (Type, String)] -> Map String (Type, String) -> String -> String -> LCS [String]
--- createPhiBlock' framesBeforeLoop frameAfterLoop phiLabel whileBodyLabel = do
---   let varsAfterLoop = Map.toList frameAfterLoop
---   phiNodes <- mapM createPhiNodeForVar varsAfterLoop
---   return $ catMaybes phiNodes
---   where
---     createPhiNodeForVar (varName, (varType, varRegAfter)) = do
---       let varBefore = findInPhiFrameByNameAndType varName varType framesBeforeLoop
---       case varBefore of
---         Just varRegBefore -> Just <$> createPhiNode varName varType varRegBefore varRegAfter phiLabel whileBodyLabel
---         Nothing -> return Nothing
 
 createSinglePhiBlock :: [Map String (Type, String)] -> Map String (Type, String) -> String -> LCS [String]
 createSinglePhiBlock framesBeforeLoop frameAfterLoop whileCondLabel = do
@@ -973,30 +952,24 @@ checkIfVarHasPhiNode varName = do
 
 handlePhiBlockAtIfElse :: Map String (Type, String) -> Map String (Type, String) -> String -> String -> Bool -> Bool -> LCS [String]
 handlePhiBlockAtIfElse phiFrameAfterTrue phiFrameAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch wasReturnInTB wasReturnInFB = do
-  -- Krok 1: Obsługa elementów wspólnych dla obu gałęzi if-else
   if (not (wasReturnInFB || wasReturnInTB)) then do
     commonElements <- forM (Map.toList phiFrameAfterTrue) $ \(varName, (varType, regAfterTrue)) -> do
       case Map.lookup varName phiFrameAfterFalse of
         Just (_, regAfterFalse) -> do
-          -- Tworzenie phi-zmiennej dla elementów wspólnych
           phiNode <- createPhiNode varName varType regAfterTrue regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
           return $ Just phiNode
         Nothing -> do
-          -- W przypadku braku elementu w drugiej ramce
           regBefore <- getVariableNameFromStack varName
           phiNode <- createPhiNode varName varType regBefore regAfterTrue lastLabelInFalseBranch lastLabelInTrueBranch
           return $ Just phiNode
-    -- Krok 2: Obsługa pozostałych elementów
     remainingElements <- forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
-      -- Sprawdzenie czy element nie został już przetworzony
       case Map.lookup varName phiFrameAfterTrue of
-        Just _ -> return Nothing -- Element już przetworzony
+        Just _ -> return Nothing
         Nothing -> do
           regBefore <- getVariableNameFromStack varName
           phiNode <- createPhiNode varName varType regBefore regAfterFalse lastLabelInTrueBranch lastLabelInFalseBranch
           return $ Just phiNode
     return $ catMaybes (commonElements ++ remainingElements)
-  -- Krok 3: Obsługa gałęzi if-else, jeśli w tej drugiej wystąpił return
   else do
     if wasReturnInTB then do
       forM (Map.toList phiFrameAfterFalse) $ \(varName, (varType, regAfterFalse)) -> do
@@ -1026,8 +999,7 @@ createPhiNodesAndUpdateFramesWithExprsAfterCondElse ifLabel elseLabel ifFrame el
           else
             return (accPhi, accIfFrame, accElseFrame)
         Nothing -> return (accPhi, accIfFrame, accElseFrame)
-
-    replaceExprVarName expr newName frame = map (\(e, var) -> if e == expr then (e, newName) else (e, var)) frame
+    replaceExprVarName expr newName = map (\(e, var) -> if e == expr then (e, newName) else (e, var))
 
 searchExprsFrameAndLookupForExpr :: Latte.Abs.Expr -> [(Latte.Abs.Expr, String)] -> LCS (Maybe String)
 searchExprsFrameAndLookupForExpr expr frame = do
@@ -1060,7 +1032,6 @@ getValueOfInductionVariable varName = do
     Just (_, val) -> return $ Just val
     Nothing -> return Nothing
 
---w tej wersji, jeśli zmienna jest inkrementowana dwa razy, to nie zostanie uznana za indukcyjną
 potentiallyMarkAsInductionVar :: String -> Int -> LCS ()
 potentiallyMarkAsInductionVar varName val = do
   lookupResult <- lookupForInductionVariableInTopFrame varName
@@ -1110,7 +1081,7 @@ analyzeStmtInLookingForIV stmt = do
         Latte.Abs.ELitFalse _ -> return ()
         _ -> do
           markAllVarsAsNonInductive blockStmt
-    _ -> return ()  -- Pominięcie innych typów instrukcji
+    _ -> return ()
     where
     markAllVarsAsNonInductive :: Latte.Abs.Stmt -> LCS ()
     markAllVarsAsNonInductive orgStmt =
@@ -1135,7 +1106,7 @@ analyzeAssignmentInLookingForIV ident expr  = case expr of
     Latte.Abs.EAdd _ expr1 op expr2 ->
       analyzeAddExpr ident expr1 op expr2
     --x = x
-    Latte.Abs.EVar _ newIdent -> return () --TODO sprawdzic
+    Latte.Abs.EVar _ newIdent -> return ()
     _ -> do
       markVariableAsNotInduction (name ident)
 
@@ -1149,7 +1120,7 @@ analyzeAddExpr ident expr1 op expr2 = do
         if newIdent == ident then
           case op of
             Latte.Abs.Plus _ -> potentiallyMarkAsInductionVar (name ident) (convertELitIntToInt expr1)
-            Latte.Abs.Minus _ -> markVariableAsNotInduction (name ident) --przypadek c - x oznacza, że x nie basic induction variable
+            Latte.Abs.Minus _ -> markVariableAsNotInduction (name ident)
         else markVariableAsNotInduction (name ident)
       _ -> markVariableAsNotInduction (name ident)
   else do
@@ -1362,7 +1333,6 @@ addStmtsAfterInductionVars stmtMap (Latte.Abs.Block p stmts) = Latte.Abs.Block p
           s : getExtraStmts (name ident) ++ addStmts ss
         Latte.Abs.Decr p ident ->
           s : getExtraStmts (name ident) ++ addStmts ss
-        -- Obsługa zagnieżdżonych bloków
         Latte.Abs.BStmt p block ->
           Latte.Abs.BStmt p (addStmtsAfterInductionVars stmtMap block) : addStmts ss
         _ -> s : addStmts ss
@@ -1464,7 +1434,6 @@ inlineFunctionCall ident argsRegisters argsTypes = do
     modify $ \s -> s { compilerOutput = compilerOutput s ++ [label ++ ":"] }
     register <- putDummyRegister
     popLabelFromStack
-    -- popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
     modify $ \s -> s { currentInlineFunctionType = originalType, returnReached = originalReturnFlag,
@@ -1473,7 +1442,6 @@ inlineFunctionCall ident argsRegisters argsTypes = do
     return register
   else do
     register <- handleReturnPhiBlockInInlineFunction retType label topLabel
-    -- popExprsFrame
     popVariablesFrame
     popInlineFunctionReturnFrame
     modify $ \s -> s { currentInlineFunctionType = originalType, returnReached = originalReturnFlag,
@@ -1567,17 +1535,13 @@ generateDummyRegister = do
       let call = dummyRegister ++ " = getelementptr inbounds [1 x i8], [1 x i8]* " ++
             emptyStringLabel ++ ", i32 0, i32 0"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [call] }
-    Void -> do --TODO moze mozna to usunąć
+    Void -> do
       let dummyAdd = dummyRegister ++ " = add i1 0, 0"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
     _ -> do
       let dummyAdd = dummyRegister ++ " = add " ++ typeToLlvmKeyword returnType ++ " 0, 0"
       modify $ \s -> s { compilerOutput = compilerOutput s ++ [dummyAdd] }
   return dummyRegister
-
---DO USUNIĘCIA
-putMapToStringList :: Map.Map String (Type, String) -> [String]
-putMapToStringList m = [k ++ ":" ++ v | (k, (_, v)) <- Map.toList m]
 
 -------------------------------------------------------
 ------------------EXPRESSIONS SECTION------------------
@@ -1868,14 +1832,10 @@ instance Compile Latte.Abs.Stmt where
     else case stmt of
       Latte.Abs.Empty _ -> return ()
       Latte.Abs.BStmt _ block -> do
-        -- w GCSE jak wychodzimy z bloku to nie chcemy tracić exprs z tego bloku, bo wiemy, że są one osiągalne. 
-        -- W przypadku bloku w if i while, to i tak pushujemy nowy blok, więc nie ma problemu
-        -- pushExprsFrame
         pushVariablesFrame
         modify $ \s -> s { returnReached = False }
         compile block
         popVariablesFrame
-        -- popExprsFrame
       Latte.Abs.Decl p type_ items -> forM_ items $ \item -> case item of
         Latte.Abs.NoInit _ ident -> do
           let varName = name ident
@@ -1933,7 +1893,6 @@ instance Compile Latte.Abs.Stmt where
             compile stmt
             returnFlag <- gets returnReached
             phiFrameAfterIf <- gets phiNodesStack
-            -- jesli w ifie jest return to nie dodajemy br label i nie chcemy tworzych phi zmiennych z tego ifa, bo i tak nie beda uzyte i llvm wyrzuci error
             if not returnFlag then do
               popPhiNodesFrameAndMergeItIntoStack
               modify $ \s -> s { compilerOutput = compilerOutput s ++ ["br label %" ++ endLabel] }
@@ -1969,7 +1928,6 @@ instance Compile Latte.Abs.Stmt where
               when isItInInlineFunction $ do
                 dummy <- putDummyRegister
                 modify $ \s -> s { isBrLastStmt = False }
-                -- when returnFlag $ addInlineFunctionReturnToFrame endLabel dummy
 
       Latte.Abs.CondElse p expr stmt1 stmt2 -> do
         e <- compilerExpr expr
