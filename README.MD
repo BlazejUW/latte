@@ -1,25 +1,18 @@
 # Kompilator języka Latte do LLVM
 
-Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, który można podlinkować z kodem z katalogu runtime. Kompilator obsługuje wszystkie podtawowe funkcjonalności języka Latte. Aktualna wersja kompilatora obsługuje następujące funkcjonalności:
-1. Frontend: 4 pkt
-2. Backend: 8 pkt
-3. Użycie rejestrów i phi zamiast alloc w LLVM: 2 pkt
-4. LCSE: 3 pkt
-5. GCSE: 2 pkt
-6. function inlining: 3 pkt (wszystkie funkcje poza main i rekurancyjnymi są inlinowane)
-7. zmienne indukcyjne pętli i redukcja mocy: 2 pkt
-
-Aktualna maksymalna punktacja: 24 pkt
-
-W kolejnym terminie planuję oddać jeszcze następujące optymalizacje i rozszerzenia:
-* tablice: 1 pkt
-* struktury: 2 pkt
-* odśmiecanie: 2 pkt
+Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, który można podlinkować z kodem z katalogu runtime. Kompilator obsługuje wszystkie podstawowe funkcjonalności języka Latte. Aktualna wersja kompilatora obsługuje następujące funkcjonalności:
+1. Frontend: 4/4 pkt
+2. Backend: 8/8 pkt
+3. Użycie rejestrów i phi zamiast alloc w LLVM: 2/2 pkt
+4. LCSE: 3/3 pkt
+5. GCSE: 2/2 pkt
+6. function inlining: 3/3 pkt (wszystkie funkcje poza main i rekurancyjnymi są inlinowane)
+7. zmienne indukcyjne pętli i redukcja mocy: 2/2 pkt
 
 
 ## Uruchamianie
 Aby uruchomić kompilator należy:
-* użyć polecenia `make` w katalogu głównym projektu. W wyniku jego działania powstaje plik wykonywalny latc
+* użyć polecenia `make` w katalogu głównym projektu. W wyniku jego działania powstaje plik wykonywalny `latc`
 * użyć polecenia `./latc nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku powodzenia na standardowe wyjście zostanie wypisany kod LLVM.
 * użyć polecenia `./latc_llvm nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku działania tego polecenia powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
 * dodatkowo, dodałem flagę `-no_inline`, która wyłącza inlining funkcji. Dzięki temu można sprawdzić, czy program działa poprawnie bez inliningu. W tym celu należy użyć polecenia `./latc -no_inline nazwa_pliku.lat`, dzięki czemu na standardowe wyjście zostanie wypisany kod LLVM bez inliningu funkcji. 
