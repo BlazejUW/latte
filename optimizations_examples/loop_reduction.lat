@@ -1,0 +1,17 @@
+int main() {
+    int n = 0;
+    int sum = 0;
+    int i = 10;
+    int j = 4;
+
+    while (i > n) {
+        sum = sum + i*2;  // Induction variable 'i' and strength reduction
+        i = i - 2;
+        printInt(4*j); // Induction variable 'j' and strength reduction in expression
+        j++;
+        5*j; // Induction variable 'j' and strength reduction in expression without assignment, 'j' used multiple times
+    }
+
+    printInt(sum);
+    return 0;
+}

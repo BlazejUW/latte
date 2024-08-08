@@ -1,103 +1,133 @@
-# Kompilator języka Latte do LLVM
+# Latte Language Compiler to LLVM
 
-Kompilator języka Latte napisany w Haskellu. Kompilator generuje kod LLVM, który można podlinkować z kodem z katalogu runtime. Kompilator obsługuje wszystkie podstawowe funkcjonalności języka Latte. Aktualna wersja kompilatora obsługuje następujące funkcjonalności:
-1. Frontend: 4/4 pkt
-2. Backend: 8/8 pkt
-3. Użycie rejestrów i phi zamiast alloc w LLVM: 2/2 pkt
-4. LCSE: 3/3 pkt
-5. GCSE: 2/2 pkt
-6. function inlining: 3/3 pkt (wszystkie funkcje poza main i rekurancyjnymi są inlinowane)
-7. zmienne indukcyjne pętli i redukcja mocy: 2/2 pkt
+This project is a compiler for the Latte programming language, written in Haskell. The compiler generates LLVM intermediate code, which can be linked with the runtime support code provided in the project. It supports all basic functionalities of the Latte language and includes several optimizations.
+
+## What is Latte?
+Latte is a simple programming language designed for educational purposes, similar to C/Java. It focuses on fundamental constructs and functionalities such as loops, conditionals, and functions. You can find the complete language specification here: [Latte Language Specification](https://www.mimuw.edu.pl/~ben/Zajecia/Mrj2013/Latte/description.html).
 
 
-## Uruchamianie
-Aby uruchomić kompilator należy:
-* użyć polecenia `make` w katalogu głównym projektu. W wyniku jego działania powstaje plik wykonywalny `latc`
-* użyć polecenia `./latc nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku powodzenia na standardowe wyjście zostanie wypisany kod LLVM.
-* użyć polecenia `./latc_llvm nazwa_pliku.lat` w celu skompilowania pliku z rozszerzeniem .lat. W wyniku na strumień stderr zostanie zwrócony komunikat o powodzeniu lub niepowodzeniu kompilacji. W wyniku działania tego polecenia powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
-* dodatkowo, dodałem flagę `-no_inline`, która wyłącza inlining funkcji. Dzięki temu można sprawdzić, czy program działa poprawnie bez inliningu. W tym celu należy użyć polecenia `./latc -no_inline nazwa_pliku.lat`, dzięki czemu na standardowe wyjście zostanie wypisany kod LLVM bez inliningu funkcji. 
-To polecenie sprawia, że kod LLVM jest podlinkowany z runtime.bc i uruchamiany za pomocą lli.
-Można też użyć polecenia: `./latc_llvm -no_inline nazwa_pliku.lat` w wyniku którego powstanie plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc.
-Dodatkowo, można przetestować kod no_inline bezpśrednio za pomocą komendy:
+
+## Features
+The compiler supports the following features:
+1. Frontend: 4/4 points
+2. Backend: 8/8 points
+3. Use of registers and phi nodes instead of alloc in LLVM: 2/2 points
+4. Local Common Subexpression Elimination (LCSE): 3/3 points
+5. Global Common Subexpression Elimination (GCSE): 2/2 points
+6. Function inlining: 3/3 points (all functions except main and recursive ones are inlined)
+7. Loop induction variables and strength reduction: 2/2 points
+
+## Running the Compiler
+To run the compiler, follow these steps:
+* Use the `make` command in the project's root directory to create the executable file `latc`.
+* Use `./latc filename.lat` to compile a .lat file. Compilation messages will be output to stderr. On success, LLVM code will be printed to stdout.
+* Use `./latc_llvm filename.lat` to compile a .lat file. This will create an LLVM file named program.ll and a linked LLVM file program.bc, which can be used with lli.
+* The `-no_inline` flag disables function inlining, allowing verification of program correctness without inlining. Use `./latc -no_inline filename.lat` to output LLVM code without inlining, and link it with runtime.bc for execution with lli.
+* Alternatively, use `./latc_llvm -no_inline filename.lat` to produce an LLVM file named program.ll and a linked LLVM file program.bc with runtime.bc.
+* You can also test the no_inline code directly with the command:
+
 ```
-./latc -no_inline nazwa_pliku.lat | llvm-link -S ./lib/runtime.bc - | lli
+./latc -no_inline filename.lat | llvm-link -S ./lib/runtime.bc - | lli
 ```
-### Struktura Projektu:
-1. Katalog `src/Latte`: Główny katalog zawierający kod źródłowy kompilatora. W tym katalogu znajdują się wszystkie niezbędne moduły Haskell, takie jak moduł analizy składniowej (Abs.hs), lekser (Lex.hs), parser (Par.hs), moduł drukujący (Print.hs), moduł pomocniczy (Helpers.hs). Zamieszczam te pakiety jako źródłowe, gdyż na serwerze students używane przeze mnie w projekcie polecenie bnfc nie działa prawidłowo. Z tego względu dołączam pliki wygenreowane przez bnfc. W tym katalogu znajdują się także moduły Compiler.hs, Typechecker.hs i RunCompile.hs:
-* `Typechecker.hs`: Moduł odpowiedzialny za sprawdzanie typów w drzewie składniowym. Zbiera informacje o typach wyrażeń i funkcji, które są później wykorzystywane w procesie kompilacji.
-* `Compiler.hs`: Główny moduł kompilatora, który przetwarza drzewo składniowe na kod pośredni LLVM. Zawiera logikę kompilacji, w tym obsługę pętli, konstrukcji warunkowych i innych elementów języka.
-* `RunCompile.hs`: Punkt wejścia aplikacji, który zarządza procesem parsowania, typecheckingu i kompilacji. Obsługuje argumenty linii poleceń i wyświetla wyniki działania kompilatora.
-2. Katalog `lib`: Zawiera pliki pomocnicze runtime.bc, który zawiera predefiniowane funkcje w LLVM używane podczas kompilacji i runtime.c, który zawiera kod źródłowy tych funkcji.
-3. Plik `latc_llvm`: Skrypt bashowy, który uruchamia kompilator plikiem latc i podlinkowuje wygenerowany kod LLVM z kodem z katalogu lib. W wyniku jego działania w katalogu w którym został użyty powstaje plik LLVM o nazwie program.ll, a także plik program.bc, będący podlinkowanym plikiem LLVM z runtime.bc. Plik program.bc można wykorzystywać za pomocą lli
-4. Plik `src/Makefile`: Plik makefile, który kompiluje kompilator i tworzy plik wykonywalny RunCompile w katalogu src/Latte.
-5. Plik `Makefile`: Plik makefile, który wywołuje make w katalogu src i tworzy plik wykonywalny latc w katalogu głównym.
-6. * Plik `latc`: Plik wykonywalny, powstający po uruchomieniu komendy make uruchamiający kompilator. Nie jest dołączony do projektu, ale postanawiam umieścić go w README, żeby zaznaczyć, że plik ten jest linkiem do pliku RunCompile w katalogu src/Latte.
 
-## Szczegóły kompilacji
-1. Budowanie Drzewa Składniowego:
-Kompilacja rozpoczynała się od budowania drzewa składniowego za pomocą BNFC (Bison Normal Form Converter), który wczytywał zdefiniowaną gramatykę języka Latte. Jak zaznaczyłem wcześniej, krok ten został wykonany u mnie lokalnie, przez co wygenerowane przez to narzędzie lekser i parser służą do analizy i przekształcenia kodu źródłowego w strukturę drzewa, ułatwiającą dalszą obróbkę.
-2. Parsowanie:
-Kolejnym etapem jest parsowanie, gdzie wczytany kod źródłowy jest przekształcany przez lekser i parser w drzewo składniowe. Umożliwia mi to w dalszej części kompilacji poruszanie się po drzewie i wykonywanie odpowiednich operacji.
-3. Typechecking:
-Po zbudowaniu drzewa składniowego następuje etap typecheckingu, realizowany przez moduł Typechecker. Typechecker analizuje drzewo pod kątem poprawności typów, sprawdzając zgodność deklaracji i użycia zmiennych oraz funkcji. Sprawdza także obecność return w funkcjach. W tym etapie zbierane są informacje o napotkanych funkcjach oraz typach każdego wyrażenia. Informacje te są przechowywane w mapie exprTypes, umożliwiając łatwy dostęp do typów wyrażeń w trakcie kompilacji.
-4. Kompilacja:
-Właściwa kompilacja znajduje się w module Compiler. Polega na przetworzeniu drzewa składniowego w kod pośredni LLVM. Proces ten odbywa się poprzez rekursywne przechodzenie po drzewie składniowym i generowanie odpowiednich instrukcji LLVM. Znaczącą cechą implementacji jest brak użycia instrukcji alloca dla alokacji pamięci, co jest realizowane przez techniki znane z kompilacji SSA (Static Single Assignment). W trakcie kompilacji wykorzystywane są informacje o typach wyrażeń, które zostały zebrane w etapie typecheckingu. Przy napotkaniu nowego wyrażenia sprawdzam, czy było już ono wcześniej obliczane. **Poniżej umieszczam szczegóły implementacyjne i algorytmiczne zrobionych przeze mnie optymalizacji**.
-* Obsługa Pętli while:
-W przypadku pętli while, stosowana jest technika polegająca na dwukrotnym przejściu przez pętlę. Pierwsze przejście służy do identyfikacji tych zmiennych, które w bloku zmieniają swoją wartość, następnie umieszczam blok phi na początku pętli. Po pierwszym przejściu przywracam stan sprzed "sztucznego" przejścia. Drugi obrót realizuje właściwą kompilację pętli. Wcześniej analizuje także występujące w ciele funkcji wyrażenia i podwyrażenia, które kwalifikują się do redukcji mocy oraz zmienne indukcyjne.
-5. Struktura kompilatora:
-Cała napisane przeze mnie logika kompilacji jest umieszczona w modułach Compiler, Typechecker, i RunCompile, a struktura programu jest zorganizowana w sposób umożliwiający łatwe śledzenie procesu kompilacji od parsowania po generację kodu pośredniego LLVM. W pliku Helpers.hs trzymam niemonadyczne funkcje używane w modułach kompilatora.
+### Project Structure
+1. **Directory `src/Latte`**: Contains the main source code of the compiler, including essential Haskell modules:
+   * `Abs.hs`: Syntax analysis module
+   * `Lex.hs`: Lexer module
+   * `Par.hs`: Parser module
+   * `Print.hs`: Printer module
+   * `Helpers.hs`: Helper functions
+   * `Typechecker.hs`: Responsible for type checking the syntax tree
+   * `Compiler.hs`: Transforms the syntax tree into LLVM intermediate code
+   * `RunCompile.hs`: Application entry point managing parsing, type checking, and compilation
+2. File  `src/Latte.cf`: The grammar file for the Latte language used by BNFC to generate the lexer and parser.
 
+3. **Directory `lib`**: Contains auxiliary files such as `runtime.bc` (predefined LLVM functions) and `runtime.c` (source code for these functions).
+4. **File `latc_llvm`**: A bash script that runs the compiler and links the generated LLVM code with the `lib` directory code, creating `program.ll` and `program.bc`.
+5. **File `src/Makefile`**: Compiles the compiler and creates the executable `RunCompile` in `src/Latte`.
+6. **File `Makefile`**: Invokes make in `src` and creates the executable `latc` in the root directory.
+7. **File `latc`**: The executable file created after running make, linking to `RunCompile` in `src/Latte`.
 
-## Opis realizacji optymalizacji
-***W następnym podrozdziale znajduje się opis przykładów dołączonych przeze mnie do projektu, wizualizujących działanie optymalizacji.***
-### LCSE
-W trakcie kompilacji wykorzystywane są informacje o typach wyrażeń, które zostały zebrane w etapie typecheckingu. Przy napotkaniu nowego wyrażenia sprawdzam, czy było już ono wcześniej obliczane. Umożliwia mi to zaimplementowany mechanizm porównywania wyrażeń. Jeśli wyrażenie zostało już wcześniej obliczone, to zamiast jego obliczania, wstawiam do kodu LLVM instrukcję przypisania do zmiennej, która przechowuje wynik obliczenia tego wyrażenia. Dzięki temu unikam wielokrotnego obliczania tego samego wyrażenia, co przyspiesza działanie programu. Nie dodałem jednak zastępowania wyrażeń, które są wywołaniami funkcji, ponieważ w tym przypadku nie jestem w stanie sprawdzić, czy funkcja jest czysta, czy nie. Po zobaczeniu instrukcji przypisania do zmiennej usuwam ze zbioru wyrażeń wszystkie te, które były powiązane z tą zmienną, co zapewnia mi, że nie zastąpię wyrażenia innym, które jest już nieaktualne. 
-W aktualnej wersji kompilatora ramka LCSE jest czyszczona po wyjściu z bloku. 
+## Compilation Details
+1. **Building the Syntax Tree**:
+   The process starts with building the syntax tree using BNFC (Bison Normal Form Converter), which reads the defined Latte grammar. This generates the lexer and parser, transforming the source code into a tree structure for further processing.
+2. **Parsing**:
+   The lexer and parser convert the source code into a syntax tree, enabling navigation and operations during compilation.
+3. **Type Checking**:
+   The `Typechecker` module verifies type correctness, checking variable and function declarations and usage. It also ensures the presence of return statements in functions, storing information in the `exprTypes` map for use during compilation.
+4. **Compilation**:
+   The `Compiler` module transforms the syntax tree into LLVM intermediate code, recursively traversing the tree and generating corresponding LLVM instructions. It avoids using `alloca` for memory allocation, instead utilizing SSA (Static Single Assignment) techniques. Expression types collected during type checking help in this process. Key details include:
+   * **Handling While Loops**: Two-pass technique to identify and handle changing variables, using phi nodes and ensuring correct loop compilation.
+5. **Compiler Structure**:
+   The compilation logic is organized in `Compiler`, `Typechecker`, and `RunCompile` modules, with non-monadic helper functions in `Helpers.hs`.
 
-### GCSE
-Działa tak samo jak LCSE, z tą różnicą, że jeśli podwyrażenie jest dostępne w każdej możliwej ścieżce (a dokładniej: jest obliczane zarówno w gałęzi if jak i else przypadku CondElse) to również jest ono zapamiętane i reużywane. W przypadku, gdy podwyrażenie jest dostępne tylko w jednej gałęzi if lub else, to nie jest ono zapamiętane.
+## Optimization Implementations
+***The next subsection describes examples included in the project that visualize the optimizations.***
 
-### Function inlining
-Na etapie typecheckingu zbieram informacje o tym, jakie funkcje są wywoływane w ciele każdej z funkcji. Tworzę skierowany graf wywołań, w którym węzłami są funkcje a krawędziami wywołania. Następnie szukam w tym grafie cykli. Początkowo zakładam, że wszystkie funkcje są inlinowalne. Gdy znajdę cykl usuwam ze zbioru funkcji inlinowanych wszyskite funkcje z tego cyklu. Pozwala mi to zapobiec inlinowaniu funkcji rekurencyjnych i wzajemnie rekurencyjnych. Przekazuję do kompilatora informacje o tym, które funkcje są inlinowalne i gdy w trakcie kompilacji napotkam wywołanie funkcji, to sprawdzam, czy jest ona inlinowalna. Jeśli tak, to wstawiam do kodu LLVM kod funkcji, którą wywołuje, a jeśli nie, to wstawiam instrukcję wywołania funkcji. Kod funkcji inlinowalnej różni się tym, że nie zwraca nic przez return. Po napotkaniu takiej instrukcji (trochę inny mechanizm w przypadku if) wstawiam instrukcję skoku do końca funkcji inlinowanej. **Poprzed generowanie odpowiednich komentarzy zadbałem o to, żeby były widoczne: początek funkcji inlinowanej, których rejestrów używa jako argumentów i końca funkcji inlinowanej.**
-### Zmienne indukcyjne pętli i redukcja mocy
-- **⁠Zmienne indukcyjne pętli**:
-W celu zidentyfikowania zmiennych indukcyjnych przechodzę przez ciało pętli w poszukiwaniu statemeantów, które są postaci ``i = i + C`` lub ``i++`` lub ``i--``, gdzie i to identyfikator zmiennej, a C jakaś stała. Zgodnie z definicją z zajęć, przypisanie na zmienną indukcyjną może odbywać się dokładnie raz. W myśl tej zasady, jeśli napotkam drugie przypisanie do zmiennej indukcyjnej, to usuwam ją ze zbioru zmiennych indukcyjnych. Usuwam ze zbioru także każdą zmienną indukcyjną, która wystąpiła w bloku if lub ifelse, bo nie mam pewności, czy pojawi się dokładnie raz i będzie w ten sam sposób inkrementowana. ⁠
-- **Redukcja mocy**:
-W moim kompilatorze redukuję każde wyrażenie i podwyrażenie, które kwalifikuje się do redukcji, czyli takie, które jest postaci ``A*i``, gdzie A to stała, a i to zmienna indukcyjna. Gdy posiadam już informację o zmiennych indukcyjnych danej pętli, rozpoczynam poszukiwania wyrażeń i podwyrażeń do redukcji. W tym celu rekurencyjnie rozważam każde wyrażenie używane w pętli (poza przypadkiem zagnieżdżonej pętli while, która to posiada swój własny stos redukcji). Jeśli napotkam wyrażenie, które kwalifikuje się do redukcji, to zapisuje to wyrażenie do przetworzenia, przypisuję mu nową zmienną redukcyjną i zastępuje to wyrażenie wyrażeniem EVar z tą zmienną. Po przejściu całego ciała pętli tworzę blok deklaracji zmiennych redukcyjnych, który umieszczam przed pętlą while. Zmienne redukcyjne są zainicjalizowane na wyrażenie, które zastąpiły. Na przykład, jeśli znaleźliśmy wyrażenie `i*4`, to tworzymy nową zmienną redukcyjną, powiedzmy k, i przed ciałem pętli umieścimy:
-``
-int k = i*4;
-``
-Samo mnożenie zredukowane dodawaniem zapisujemy zaraz po inkrementacji zmiennej indukcyjnej. Jeśli zmienna indukcyjna wyglądała i = i + A, a zmienna redukcyjna ``k = i*B``, to po napotkaniu instrukcji ``i = i+ A`` umieszczamy przypisanie: ``k = k + A*B``, gdzie A*B to stała, którą wymnażamy na etapie kompilacji.
+### LCSE (Local Common Subexpression Elimination)
+During compilation, information about expression types collected during type checking is utilized. When a new expression is encountered, the compiler checks if it has been computed before using an implemented expression comparison mechanism. If the expression has been computed before, the compiler inserts an LLVM assignment instruction to the variable holding the result of that expression instead of recomputing it. This avoids redundant computations, speeding up the program. Function calls are not replaced because it is not possible to determine if the function is pure. After an assignment to a variable, all expressions associated with that variable are removed from the expression set to ensure no outdated expressions are reused. The LCSE frame is cleared upon exiting a block in the current version of the compiler.
 
-## Opis programów wizualizujących działanie optymalizacji
-**Wszyskie programy wizualizujące działanie optymalizacji są umieszczone w katalogu `optymalizacje_przyklady/`**
+### GCSE (Global Common Subexpression Elimination)
+GCSE works similarly to LCSE, but on a larger scope. If a subexpression is available on every possible path (e.g., computed in both the if and else branches of a CondElse), it is also recorded and reused. If the subexpression is available only in one branch (either if or else), it is not recorded.
+
+### Function Inlining
+During type checking, information about which functions are called within each function body is collected. A directed call graph is created, with nodes representing functions and edges representing function calls. Cycles in this graph are identified to prevent inlining recursive and mutually recursive functions. Initially, all functions are assumed to be inlinable. When a cycle is detected, all functions within the cycle are removed from the set of inlinable functions. This information is passed to the compiler, which checks if a function is inlinable when encountering a function call. If so, the function's code is inserted into the LLVM code at the call site; otherwise, a function call instruction is inserted. Inlined function code differs in that it does not return anything via a return statement. When such an instruction is encountered (a slightly different mechanism is used for if statements), a jump instruction to the end of the inlined function is inserted. **Appropriate comments are generated to indicate the start of the inlined function, the registers used as arguments, and the end of the inlined function.**
+
+### Loop Induction Variables and Strength Reduction
+- **Loop Induction Variables**:
+  To identify loop induction variables, the loop body is traversed to find statements of the form `i = i + C` or `i++` or `i--`, where `i` is the variable identifier and `C` is a constant. According to the lecture definition, assignment to an induction variable can occur exactly once. If a second assignment to an induction variable is encountered, it is removed from the set of induction variables. Additionally, any induction variable appearing in an if or if-else block is removed from the set because it cannot be guaranteed to appear exactly once and be incremented consistently.
+
+- **Strength Reduction**:
+  In the compiler, any expression and subexpression that qualifies for strength reduction (i.e., of the form `A*i`, where `A` is a constant and `i` is an induction variable) is reduced. Once the induction variables for a loop are identified, expressions and subexpressions eligible for reduction are searched recursively within the loop body (excluding nested while loops with their own reduction stacks). If a qualifying expression is found, it is stored for processing, assigned a new reduction variable, and replaced with an `EVar` expression containing the new variable. After traversing the entire loop body, a block of reduction variable declarations is created and placed before the while loop. Reduction variables are initialized to the expressions they replaced. For example, if `i*4` is found, a new reduction variable `k` is created and initialized as:
+``` int k = i*4; ```
+
+The reduced multiplication by addition is recorded immediately after the induction variable increment. If the induction variable was incremented as `i = i + A` and the reduction variable `k = i*B`, then after encountering `i = i + A`, the assignment `k = k + A*B` is inserted, where `A*B` is a compile-time constant.
+
+## Example Programs Demonstrating Optimizations
+**All example programs demonstrating the optimizations are located in the `optimizations_examples/` directory.**
+
 ### LCSE: `lcse.lat`
-W przykładzie demonstuję wykorzystywanie już wcześniej obliczonych podwyrażeń. Program rozpoczyna się od deklaracji i inicjalizacji zmiennych, po czym przechodzi do serii obliczeń, w których pojawiają się powtarzające się podwyrażenia. Centralnym punktem jest identyfikacja i optymalizacja tych powtarzających się fragmentów kodu. W kodzie umieściłem kilka podwyrażeń, które są dobrymi kandydatami do LCSE. Są to `a + b` i `a - b`, używane w różnych miejscach programu. Kompilator wykrywa te powtarzające się podwyrażenia i oblicza je tylko raz na początku bloku kodu, a następnie wielokrotnie wykorzystuje wyniki tych obliczeń. Natomiast po zmianie wartości zmiennej `a` kompilator powtarza proces obliczania podwyrażeń i nie używa starych wyników, ponieważ są one nieaktualne. Nowe podwyrażenia są ponownie zapamiętywane i używane.
+This example demonstrates the reuse of previously computed subexpressions. The program begins with variable declarations and initializations, followed by a series of computations containing repeated subexpressions. The main focus is identifying and optimizing these repeating code fragments. The example includes several subexpressions that are ideal candidates for LCSE, such as `a + b` and `a - b`, used in various parts of the program. The compiler detects these repeating subexpressions, computes them once at the beginning of the code block, and reuses the results multiple times. When the value of variable `a` changes, the compiler recomputes the subexpressions and does not use outdated results, ensuring accurate calculations.
+
 ### GCSE: `gcse.lat`
-Podobnie jak w LCSE, GCSE polega na wykorzystywaniu już wcześniej obliczonych podwyrażeń, lecz różni się tym, że dotyczy to całej funkcji, a nie tylko pojedynczego bloku kodu. Obrazuje to pokazując reużycie podwyrażenia policzonego w obu gałęziach ifelse. Warto zauważyć, że chodzi o podwyrażenia, a nie przypisania. Jak widać w przykładzie, podwyrażenia `a-b+1` jest przypisywane po pętli na na rejestr `%phi_value_1` i następne użycia tego podwyrażenia są zastępowane przez ten rejestr. Warto zauważyć, że podwyrażenie `b+c` nie jest reużywane, bo nie było wyliczone w obu gałęziach ifelsea.
-### Function inlining: `inline_functions.lat`
-W tym przykładzie demonstruję inlinowanie funkcji.
-Program składa się z 3 funkcji możliwych do inlinowania (`do_nothing_and_sum`, `square` i `root`) i 3 niemożliwych (`factorial`, `even`, `odd`).
- Warto zauważyć, że realizuję inlining funkcji także zagnieżdżonych, wywoływanych w innych funkcjach. Takim przykładem jest wywołanie funkcji `do_nothing_and_sum`, podczas którego inlinuje także w main dwie pozostałe funkcje. Funkcja `factorial` jest rekurencyjna, więc nie używam na niej inliningu. Wartym zauważenia jest to, że wykrywam rekurencję wzajemną, więc nie inlinuje również funkcji `even`, natomiast już w definicji funkcji `odd` inlinuje funkcję `square`, (tylko po to, że w funkcjach rekurencyjnych mogę inlinować funkcje nierekurencyjne). 
-### Zmienne indukcyjne pętli i redukcja mocy: `redukcja_mocy_petli.lat`
-W przykładzie demonstruję **wykrywanie różnych zmiennych indukcyjnych** oraz **redukcje mocy w pętli na różnych rodzajach wyrażeń i podwyrażeń**. Przed pętlą deklaruje wszystkie używane zmienne. W pętli while używam dwóch zmiennych indukcyjnych, jedna jest inkrementowana za pomocą `++`, a druga zmienia się o ujemną liczbę co obrót. Prezentuje także redukcje mocy dla każdego podwyrażenia spośród pokazanych możliwego do zredukowania: w przypisaniu, w wywołaniu funkcji, w zwykłym wyrażeniu. W ogólności redukcja działa w każdym przypadku zgodnie z algorytmem pokazanym na wykładzie. 
+Similar to LCSE, GCSE reuses previously computed subexpressions, but it applies to entire functions rather than single code blocks. This is illustrated by reusing a subexpression computed in both branches of an if-else statement. It is important to note that GCSE deals with subexpressions, not assignments. In the example, the subexpression `a-b+1` is assigned to the register `%phi_value_1` after the loop, and subsequent uses of this subexpression are replaced by this register. The subexpression `b+c` is not reused because it was not computed in both branches of the if-else statement.
+
+### Function Inlining: `inline_functions.lat`
+This example demonstrates function inlining. The program consists of three inlinable functions (`do_nothing_and_sum`, `square`, and `root`) and three non-inlinable functions (`factorial`, `even`, `odd`). Inlining is also applied to nested functions called within other functions. For example, when the `do_nothing_and_sum` function is called, the `square` and `root` functions are also inlined within the `main` function. The `factorial` function is recursive, so inlining is not applied to it. Mutual recursion is detected, so the `even` function is not inlined, but the `square` function within the `odd` function is inlined because non-recursive functions can be inlined within recursive functions.
+
+### Loop Induction Variables and Strength Reduction: `loop_reduction.lat`
+This example demonstrates **the detection of various loop induction variables** and **strength reduction in loops for different types of expressions and subexpressions**. All used variables are declared before the loop. The while loop contains two induction variables: one incremented using `++` and another that changes by a negative value each iteration. The example also shows strength reduction for each subexpression type eligible for reduction: in assignments, function calls, and simple expressions. In general, strength reduction works in every case according to the algorithm presented in the lecture.
 
 
-## Środowisko
-* Haskell: Program został napisany w języku Haskell. Do jego kompilacji i uruchomienia potrzebne jest środowisko Haskell, w tym kompilator GHC (Glasgow Haskell Compiler).
-## Używane Narzędzia i Biblioteki
-Projekt kompilatora Latte do LLVM korzysta z następujących narzędzi i bibliotek:
 
-### Narzędzia:
+## Environment
+* **Haskell**: Written in Haskell. Requires GHC (Glasgow Haskell Compiler) to compile and run.
+* **LLVM**: Requires LLVM tools such as `clang`, `llvm-config`, and `lli` to generate and run the LLVM code.
+* **Make**: Requires `make` to use the provided Makefile for compilation.
+* **BNFC, Happy, Alex**: Tools needed for generating the lexer and parser from the Latte grammar.
 
-* BNFC (Bison Normal Form Converter): Wykorzystywane do generacji leksera i parsera na podstawie zdefiniowanej gramatyki języka Latte. BNFC jest kluczowe w procesie budowania drzewa składniowego i umożliwia łatwe przetwarzanie kodu źródłowego.
-* GHC (Glasgow Haskell Compiler): Kompilator języka Haskell, używany do kompilacji kodu źródłowego kompilatora. GHC zapewnia wsparcie dla nowoczesnych funkcjonalności Haskell, takich jak monady, typy danych, i więcej.
-* Happy: Generator parserów dla Haskell, używany do przetwarzania plików .y. Happy jest stosowany do generowania parsera na podstawie zdefiniowanej składni języka Latte.
-* Alex: Generator lekserów dla Haskell, używany do przetwarzania plików .x. Alex jest wykorzystywany do generowania leksera, który jest pierwszym etapem w analizie kodu źródłowego.
-### Biblioteki Haskell:
+## Required Tools and Versions
+To compile and run the Latte compiler, ensure you have the following tools installed:
 
-* Control.Monad: Zawiera funkcje monadyczne, które ułatwiają obsługę stanu i błędów w aplikacji. Jest kluczowe dla zarządzania stanem kompilatora i przepływu danych.
-* Data.Map: Używana do tworzenia i zarządzania mapami (słownikami), które przechowują informacje o zmiennych, typach i funkcjach. Jest niezbędna dla efektywnego przechowywania i dostępu do informacji w trakcie typecheckingu i kompilacji.
-* Latte.Abs, Latte.Lex, Latte.Par, Latte.Print: Moduły wygenerowane przez BNFC, które są bezpośrednio zaangażowane w proces parsowania i budowania drzewa składniowego.
-* System.Environment, System.Exit, Control.Monad: Biblioteki używane do interakcji z systemem operacyjnym i zarządzania procesem kompilacji, w tym obsługi argumentów linii poleceń i zakończenia programu.
-* Prelude: Podstawowa biblioteka Haskell, zawierająca definicje często używanych funkcji i operatorów.
+* **Clang**: Tested with Debian clang version 14.0.6
+* **LLVM**: Tested with LLVM version 14.0.6
+* **GHC**:  Compiles Haskell code. Tested with The Glorious Glasgow Haskell Compilation System, version 9.0.2
+* **Make**: Tested with GNU Make 4.3
+* **BNFC**: Generates lexer and parser from Latte grammar. Tested with BNFC version 2.9.4
+* **Happy**: Parser generator for Haskell. Tested with Happy Version 1.20.0
+* **Alex**: Lexer generator for Haskell. Tested with Alex version 3.2.7.1
+
+Ensure all the above tools are installed and accessible from the command line.
+
+
+### Haskell Libraries:
+* **Control.Monad**: Monadic functions for state and error handling.
+* **Data.Map**: Manages maps (dictionaries) for storing variable, type, and function information.
+* **Latte.Abs, Latte.Lex, Latte.Par, Latte.Print**: BNFC-generated modules for parsing and syntax tree building.
+* **System.Environment, System.Exit, Control.Monad**: Handle system interaction, command-line arguments, and process control.
+* **Prelude**: Basic Haskell library with common functions and operators.
+
+## Contact Information
+The compiler was created by me, Błażej Pałkus (Faculty of Mathematics, Informatics, and Mechanics at the University of Warsaw). The code is entirely my own work. Please do not copy it without permission. If you have any questions or need help, feel free to contact me via email: [blazej.palkus@gmail.com](mailto:blazej.palkus@gmail.com)
+
+You can also ask questions by opening a new issue on GitHub. I will be happy to help with any inquiries or problems you might encounter.

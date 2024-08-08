@@ -1,0 +1,22 @@
+int main() {
+    int a = 5;
+    int b = 10;
+
+    // Repeated subexpressions in both branches of if-else are computed only once
+    int c = (a + b) * (a - b);
+    // The subexpression a-b+1 is available after exiting the loop and is not recomputed
+    if(c > 0) {
+        printInt(a-b+1);
+        int d = b+c;
+    } else {
+        int c_prim = a-b+1 + c;
+    }
+    // The subexpression a-b+1 is available after exiting the if-else and is not recomputed
+    printInt(c);
+    int d = a - b + 1;
+    printInt(d);
+    printInt(a - b + 1);
+    // The subexpression b+c is not available after exiting the if-else, because it is not computed in both branches
+    printInt(b+c);
+    return 0;
+}

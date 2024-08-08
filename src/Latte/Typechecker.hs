@@ -41,7 +41,6 @@ data TypecheckerState = TypecheckerState
 type LTS a = StateT TypecheckerState (Either String) a
 
 --FUNCTIONS
--- Typ alias dla wierzchołka w grafie funkcji
 type FunctionVertex = (Latte.Abs.Ident, [Type])
 
 checkTypes :: (MonadError [Char] f, Show a1, Show a2) => [Char] -> Maybe (a1, a2) -> Type -> Type -> f ()

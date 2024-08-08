@@ -2,7 +2,7 @@ int main() {
     int a = 5;
     int b = 10;
 
-    // Powtarzające się podwyrażenia
+    // Repeated subexpressions
     int c = (a + b) * (a - b);
     printInt(c);
     int d = a - b + 1;
@@ -10,7 +10,7 @@ int main() {
     printInt((a + b) + (a - b));
     a = 3;
     printInt((a + b) + (a - b));
-    int e = a-b;    
+    int e = a - b;
     printInt(e);
     return 0;
 }

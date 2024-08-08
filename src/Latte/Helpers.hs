@@ -46,9 +46,9 @@ errLocation p = case p of
 
 convertToLlvmChar :: Char -> String
 convertToLlvmChar c = case c of
-  '\n' -> "\\0A" -- Nowa linia
-  '\t' -> "\\09" -- Tabulator
-  '\"' -> "\\22" -- Cudzysłów
+  '\n' -> "\\0A" -- New line
+  '\t' -> "\\09" -- Tab
+  '\"' -> "\\22" -- Quotation mark
   '\\' -> "\\5C" -- Backslash
   _    -> [c]
 
