@@ -1,0 +1,51 @@
+int main() {
+  int num = 4;
+  int sec_num = 5;
+  int result1 = do_nothing_and_sum(num, sec_num); // Can be inlined, even though it's nested
+  int result2 = factorial(num); // Should not be inlined
+  int result3 = even(num); // Should not be inlined, mutual recursion
+  printInt(result1);
+  printInt(result2);
+  printInt(result3);
+  return 0;
+}
+
+int root(int x) {
+  int result = 0;
+  while (result * result < x) {
+    result = result + 1;
+  }
+  return result;
+}
+
+int square(int x) {
+  return x * x;
+}
+
+int do_nothing_and_sum(int a, int b) {
+  int y = square(a);
+  int c = root(y);
+  return c + b;
+}
+
+int factorial(int n) {
+  if (n == 0) return 1;
+  return n * factorial(n - 1);
+}
+
+int even(int n) {
+    if (n == 0) {
+        return 1;
+    } else {
+        return odd(n - 1);
+    }
+}
+
+int odd(int n) {
+    if (n == 0) {
+        int nothing = square(5);
+        return 0;
+    } else {
+        return even(n - 1);
+    }
+}

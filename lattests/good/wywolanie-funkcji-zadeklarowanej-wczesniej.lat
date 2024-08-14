@@ -1,0 +1,13 @@
+int main(){
+    int k = zwroc_jeden();
+    nic_nie_rob(k);
+    return 0;
+}
+
+int zwroc_jeden(){
+    return 1;
+}
+
+void nic_nie_rob(int k){
+    return;
+}

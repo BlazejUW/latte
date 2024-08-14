@@ -1,0 +1,9 @@
+*.bak
+*.o
+*.hi
+*.bc
+src/Latte/RunCompile
+.DS_Store
+bp385954.tgz
+not_use
+lattests/studenckie/

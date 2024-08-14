@@ -1,0 +1,14 @@
+int main(){
+    int i = 0;
+    while(i < 10){
+        int j = i + 1;
+        int k = 0;
+        while(j<5){
+            j = j + 1;
+            k++;
+        }
+        printInt(k);
+        i++;
+    }
+    return 0;
+}

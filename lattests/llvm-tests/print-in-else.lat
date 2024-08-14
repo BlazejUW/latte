@@ -1,0 +1,9 @@
+int main(){
+    int i =3;
+    if(false);
+    else{
+        i--;
+        printInt(i);
+    }
+    return 0;
+}

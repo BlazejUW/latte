@@ -1,0 +1,12 @@
+int main(){
+    int a = 1;
+    int b = 2;
+    int c = 3;
+    if(!((a+b)==c)){
+        return 1;
+    }
+    else{
+        printString("a+b==3\n");
+    }
+    return 0;
+}

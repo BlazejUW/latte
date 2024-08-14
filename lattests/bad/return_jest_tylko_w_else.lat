@@ -1,0 +1,9 @@
+int main(){
+    int i =4;
+    if(i<5){
+        i++;
+    }
+    else {
+        return 3;
+    }
+}

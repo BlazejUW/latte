@@ -1,0 +1,8 @@
+int main(){
+    int r = 3;
+    int s = 2;
+    int t = r*s;
+    r = r*t;
+    printInt(r);
+    return 0;
+}

@@ -1,0 +1,24 @@
+#!/bin/bash -e
+
+input_file="$1"
+output_file_name="${input_file%.*}"
+
+if [ "$1" == "-no_inline" ]; then
+    input_file="$2"
+    output_file_name="${input_file%.*}"
+
+    # Uruchomienie latc z opcją "no_inline"
+    if ./latc $1 $2 > "$output_file_name.ll"; then
+        llvm-link -S "$output_file_name.ll" ./lib/runtime.bc | llvm-as -o "$output_file_name.bc"
+    else
+        rm -f "$output_file_name.ll"
+        exit 1
+    fi
+else
+    if ./latc "$input_file" > "$output_file_name.ll"; then
+        llvm-link -S "$output_file_name.ll" ./lib/runtime.bc | llvm-as -o "$output_file_name.bc"
+    else
+        rm -f "$output_file_name.ll"
+        exit 1
+    fi
+fi

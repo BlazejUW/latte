@@ -1,0 +1,6 @@
+int main(){
+    int k =3;
+    void l = printInt(k);
+    l=readInt(k);
+    return 0;
+}

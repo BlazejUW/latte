@@ -1,0 +1,29 @@
+int main(){
+    int a  = 3;
+    string s = "test";
+    printString(test(a,s));
+    return 0;
+}
+
+string test(int i, string a){
+    if(i == 2){
+        a(3);
+        return a;
+    }
+    else
+    {
+        string s = "test2";
+        return s;
+    }
+}
+
+int a(int b){
+    if(b == 2){
+        a(b);
+    }
+    else
+    {
+        return 3;
+    }
+    return 0;
+}

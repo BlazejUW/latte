@@ -1,0 +1,15 @@
+int main(){
+    int a  = 3;
+    string s = "test";
+    printString(inline__test(a,s));
+    return 0;
+}
+
+string inline__test(int i, string a){
+    while(i >0){
+        printString(a);
+        a = a + " " + a;
+        i--;
+    }
+    return a;
+}

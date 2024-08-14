@@ -1,0 +1,29 @@
+int main(){
+    int a = 1;
+    if(a == 1){
+        if(a>3 || a<=1){
+            if (a!=3){
+                if(a == 0 && a == 1){
+                    a = 1;
+                }
+                else{
+                    a = 7;
+                    int b = 3;
+                    a = power_to(a,b);
+                    printInt(a);
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+int power_to(int a, int b){
+    int i = 0;
+    int result = 1;
+    while(i<b){
+        result = result*a;
+        i = i+1;
+    }
+    return result;
+}
